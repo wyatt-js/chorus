@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/wyattjs/chorus/internal/audio"
 	"github.com/wyattjs/chorus/internal/discover"
@@ -31,7 +33,11 @@ func playCmd() *cobra.Command {
 		Use:   "play",
 		Short: "Capture system audio and stream it to Cast, AirPlay, and/or Bluetooth outputs",
 		Long: "Capture system audio and fan it out to one or more outputs.\n\n" +
+			"Run with no device flags in a terminal to open an interactive picker\n" +
+			"that scans for and lets you multi-select Cast, AirPlay, and Bluetooth\n" +
+			"devices. Pass --cast/--airplay/--bt to skip the picker.\n\n" +
 			"Examples:\n" +
+			"  chorus play                       # interactive device picker\n" +
 			"  chorus play --cast \"The Frame\"\n" +
 			"  chorus play --airplay \"HomePod\"\n" +
 			"  chorus play --cast \"The Frame\" --bt \"HW-S700D\"\n" +
@@ -40,16 +46,27 @@ func playCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			if len(casts) == 0 && len(bts) == 0 && len(airplays) == 0 {
-				return fmt.Errorf("select at least one output with --cast, --airplay, and/or --bt (see `chorus devices`)")
-			}
-
 			offMap, err := parseOffsets(offsets)
 			if err != nil {
 				return err
 			}
 
 			var targets []pipeline.Target
+
+			// No device flags: open the interactive picker (or error if not a TTY).
+			if len(casts) == 0 && len(bts) == 0 && len(airplays) == 0 {
+				if !term.IsTerminal(int(os.Stdin.Fd())) {
+					return fmt.Errorf("select at least one output with --cast, --airplay, and/or --bt, or run `chorus play` in a terminal to pick interactively")
+				}
+				targets, err = pickTargets(ctx, wait, volume, pin, offMap)
+				if err != nil {
+					return err
+				}
+				if len(targets) == 0 {
+					return fmt.Errorf("no devices selected")
+				}
+				return pipeline.Run(ctx, pipeline.Options{Targets: targets})
+			}
 
 			if len(casts) > 0 {
 				devs, err := discover.BrowseCast(ctx, wait)
@@ -61,10 +78,7 @@ func playCmd() *cobra.Command {
 					if err != nil {
 						return err
 					}
-					targets = append(targets, pipeline.Target{
-						Output: output.NewCast(dev, audio.StereoCD, volume),
-						Offset: offsetFor(offMap, dev.Name),
-					})
+					targets = append(targets, castTarget(dev, volume, offMap))
 				}
 			}
 
@@ -78,10 +92,7 @@ func playCmd() *cobra.Command {
 					if err != nil {
 						return err
 					}
-					targets = append(targets, pipeline.Target{
-						Output: output.NewAirPlay(dev, pin),
-						Offset: offsetFor(offMap, dev.Name),
-					})
+					targets = append(targets, airplayTarget(dev, pin, offMap))
 				}
 			}
 
@@ -95,10 +106,7 @@ func playCmd() *cobra.Command {
 					if err != nil {
 						return err
 					}
-					targets = append(targets, pipeline.Target{
-						Output: output.NewBT(dev),
-						Offset: offsetFor(offMap, dev.Name),
-					})
+					targets = append(targets, btTarget(dev, offMap))
 				}
 			}
 
@@ -116,6 +124,55 @@ func playCmd() *cobra.Command {
 	return cmd
 }
 
+// castTarget, airplayTarget, and btTarget build a pipeline.Target from a
+// discovered device, applying any matching per-device offset. Shared by the
+// flag-driven and interactive selection paths.
+func castTarget(dev discover.CastDevice, volume int, offMap map[string]time.Duration) pipeline.Target {
+	return pipeline.Target{
+		Output: output.NewCast(dev, audio.StereoCD, volume),
+		Offset: offsetFor(offMap, dev.Name),
+	}
+}
+
+func airplayTarget(dev output.AirPlayDevice, pin string, offMap map[string]time.Duration) pipeline.Target {
+	return pipeline.Target{
+		Output: output.NewAirPlay(dev, pin),
+		Offset: offsetFor(offMap, dev.Name),
+	}
+}
+
+func btTarget(dev output.Device, offMap map[string]time.Duration) pipeline.Target {
+	return pipeline.Target{
+		Output: output.NewBT(dev),
+		Offset: offsetFor(offMap, dev.Name),
+	}
+}
+
+// pickTargets scans for all devices, runs the interactive picker, and converts
+// the user's selection into pipeline targets.
+func pickTargets(ctx context.Context, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) ([]pipeline.Target, error) {
+	fmt.Fprintln(os.Stderr, "Scanning for Cast, AirPlay, and Bluetooth devices…")
+	groups := discoverAll(ctx, wait)
+
+	chosen, err := selectDevices(groups)
+	if err != nil {
+		return nil, err
+	}
+
+	var targets []pipeline.Target
+	for _, it := range chosen {
+		switch {
+		case it.cast != nil:
+			targets = append(targets, castTarget(*it.cast, volume, offMap))
+		case it.airplay != nil:
+			targets = append(targets, airplayTarget(*it.airplay, pin, offMap))
+		case it.bt != nil:
+			targets = append(targets, btTarget(*it.bt, offMap))
+		}
+	}
+	return targets, nil
+}
+
 func matchCast(devs []discover.CastDevice, name string) (discover.CastDevice, error) {
 	var matches []discover.CastDevice
 	for _, d := range devs {
@@ -125,7 +182,7 @@ func matchCast(devs []discover.CastDevice, name string) (discover.CastDevice, er
 	}
 	switch len(matches) {
 	case 0:
-		return discover.CastDevice{}, fmt.Errorf("no Cast device matching %q (try `chorus devices`)", name)
+		return discover.CastDevice{}, fmt.Errorf("no Cast device matching %q (run `chorus play` to pick interactively)", name)
 	case 1:
 		return matches[0], nil
 	default:
@@ -142,7 +199,7 @@ func matchAirPlay(devs []output.AirPlayDevice, name string) (output.AirPlayDevic
 	}
 	switch len(matches) {
 	case 0:
-		return output.AirPlayDevice{}, fmt.Errorf("no AirPlay device matching %q (try `chorus devices`)", name)
+		return output.AirPlayDevice{}, fmt.Errorf("no AirPlay device matching %q (run `chorus play` to pick interactively)", name)
 	case 1:
 		return matches[0], nil
 	default:
@@ -159,7 +216,7 @@ func matchOutput(outs []output.Device, name string) (output.Device, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return output.Device{}, fmt.Errorf("no output device matching %q (is it paired? try `chorus devices`)", name)
+		return output.Device{}, fmt.Errorf("no output device matching %q (is it paired? run `chorus play` to pick interactively)", name)
 	case 1:
 		return matches[0], nil
 	default:
