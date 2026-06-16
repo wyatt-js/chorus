@@ -10,8 +10,8 @@ import (
 
 	castapp "github.com/vishen/go-chromecast/application"
 
-	"github.com/wyattjs/airtooth-sync/internal/audio"
-	"github.com/wyattjs/airtooth-sync/internal/discover"
+	"github.com/wyattjs/chorus/internal/audio"
+	"github.com/wyattjs/chorus/internal/discover"
 )
 
 // Cast streams PCM to a Google Cast device by hosting a live WAV stream over HTTP
@@ -40,10 +40,10 @@ func (c *Cast) Run(ctx context.Context, in <-chan []byte) error {
 	if err != nil {
 		return fmt.Errorf("cast %s: listen: %w", c.dev.Name, err)
 	}
-	url := fmt.Sprintf("http://%s/airtooth.wav", ln.Addr().String())
+	url := fmt.Sprintf("http://%s/chorus.wav", ln.Addr().String())
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/airtooth.wav", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/chorus.wav", func(w http.ResponseWriter, r *http.Request) {
 		c.serveWAV(ctx, w, in)
 	})
 	srv := &http.Server{Handler: mux}

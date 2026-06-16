@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Device is a CoreAudio output device reported by the airtoothaudio helper.
+// Device is a CoreAudio output device reported by the chorusaudio helper.
 type Device struct {
 	UID       string
 	Transport string // builtin, bluetooth, usb, hdmi, airplay, ...
@@ -21,7 +21,7 @@ type Device struct {
 }
 
 // BT renders PCM to a CoreAudio output device (e.g. a paired Bluetooth soundbar)
-// by piping it to the airtoothaudio helper in render mode.
+// by piping it to the chorusaudio helper in render mode.
 type BT struct {
 	dev   Device
 	cmd   *exec.Cmd
@@ -108,18 +108,18 @@ func ListOutputDevices(ctx context.Context) ([]Device, error) {
 	return devices, sc.Err()
 }
 
-// helperPath locates the airtoothaudio binary: $airtooth_AUDIO, then the built
+// helperPath locates the chorusaudio binary: $CHORUS_AUDIO, then the built
 // package under the working directory, then $PATH.
 func helperPath() (string, error) {
-	if p := os.Getenv("airtooth_AUDIO"); p != "" {
+	if p := os.Getenv("CHORUS_AUDIO"); p != "" {
 		return p, nil
 	}
-	local := filepath.Join("native", "airtoothaudio", ".build", "release", "airtoothaudio")
+	local := filepath.Join("native", "chorusaudio", ".build", "release", "chorusaudio")
 	if _, err := os.Stat(local); err == nil {
 		return filepath.Abs(local)
 	}
-	if p, err := exec.LookPath("airtoothaudio"); err == nil {
+	if p, err := exec.LookPath("chorusaudio"); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("airtoothaudio helper not found (run `make deps`, set $airtooth_AUDIO, or put it on $PATH)")
+	return "", fmt.Errorf("chorusaudio helper not found (run `make deps`, set $CHORUS_AUDIO, or put it on $PATH)")
 }

@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-  name: "airtoothaudio",
+  name: "chorusaudio",
   platforms: [.macOS(.v14)],
   targets: [
-    .executableTarget(name: "airtoothaudio")
+    .executableTarget(name: "chorusaudio")
   ]
 )

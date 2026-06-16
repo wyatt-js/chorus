@@ -5,28 +5,34 @@ the user-facing project description.
 
 ## What this is
 
-`airtooth` — a macOS Go CLI that captures system audio and relays it
-time-aligned to multiple **Google Cast** + **Bluetooth** devices, with mic+chirp
-acoustic calibration (later) to auto-measure per-device latency. Module:
-`github.com/wyattjs/airtooth-sync`. Binary: `airtooth`.
+`chorus` — a macOS Go CLI that captures system audio and relays it
+time-aligned to multiple **Google Cast** + **AirPlay 2** + **Bluetooth** devices,
+with mic+chirp acoustic calibration (later) to auto-measure per-device latency.
+Module: `github.com/wyattjs/chorus`. Binary: `chorus`.
 
-The Cast + Bluetooth path is **pure Go (no cgo)**. Classic-AirPlay/RAOP sending
-is parked behind `-tags airplay` (cgo + libraop) and is not built by default.
+The whole thing is **pure Go (CGO_ENABLED=0)**. Reaching Apple/AirPlay APIs is
+done with separate sidecar processes (audiotee, chorusaudio, airplayrelay),
+never cgo. **AirPlay 2** sending is delegated to the `airplayrelay` Rust sidecar
+(wraps the pure-Rust [airplay2-rs](https://github.com/jburnhams/airplay2-rs)
+crate: mDNS discovery + HomeKit pairing + live PCM). The old classic-AirPlay/RAOP
+cgo path (libraop) has been removed — AirPlay 2 supersedes it.
 
 ## Layout
 
 ```
-cmd/airtooth/        # cobra CLI: main, devices, play
+cmd/chorus/     # cobra CLI: main, devices, play
 internal/discover/   # mDNS browse: Browse (_raop._tcp), BrowseCast (_googlecast._tcp)
 internal/capture/    # audiotee sidecar wrapper -> raw PCM stream
 internal/audio/      # shared PCM Format type (StereoCD = 44100/16/2)
 internal/output/     # Output interface, Broadcaster (fan-out + per-output delay),
-                     #   Cast (live WAV HTTP + go-chromecast), BT (airtoothaudio helper)
+                     #   Cast (live WAV HTTP + go-chromecast),
+                     #   AirPlay (airplayrelay sidecar), BT (chorusaudio helper)
 internal/pipeline/   # wires capture -> broadcaster -> outputs (Run)
-internal/raop/       # PARKED: cgo libraop RAOP sender, //go:build airplay only
-native/airtoothaudio/ # Swift helper: `list` devices + `render` PCM to a CoreAudio device
-scripts/build_deps.sh, scripts/build_deps_airplay.sh
-third_party/         # audiotee + libraop submodules (nested go.mod)
+native/chorusaudio/ # Swift helper: `list` devices + `render` PCM to a CoreAudio device
+native/airplayrelay/ # Rust sidecar (wraps airplay2-rs): `list` AirPlay 2 receivers +
+                     #   `render` s16le PCM from stdin to one (HomeKit pairing persisted)
+scripts/build_deps.sh
+third_party/         # audiotee submodule (nested go.mod)
 ```
 
 Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring only.
@@ -34,30 +40,32 @@ Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring on
 ## Build / test / run
 
 ```sh
-make deps                      # build Swift sidecars: audiotee + airtoothaudio
-make build                     # CGO_ENABLED=0 go build -o bin/airtooth ./cmd/airtooth
+make deps                      # build sidecars: audiotee + chorusaudio + airplayrelay
+make build                     # CGO_ENABLED=0 go build -o bin/chorus ./cmd/chorus
 make test                      # go test ./...
 go vet ./...                   # vet before committing
 gofmt -l cmd internal          # must report no files (formatting gate)
 ```
 
-- Default build is pure Go. `internal/raop` is excluded by the `airplay` build
-  tag, so `go build/vet ./...` does not need cgo or libraop.
-- AirPlay path (optional): `make deps-airplay && make build-airplay`
-  (`go build -tags airplay`). Its cgo paths hardcode `macos/arm64`; libraop's
-  log-level globals (`util_loglevel`, `raop_loglevel`) are defined in the cgo
-  preamble since the app, not the library, must provide them.
+- The build is pure Go (CGO_ENABLED=0); `go build/vet ./...` needs no cgo.
+- **AirPlay 2** needs a Rust toolchain (`cargo`, from https://rustup.rs):
+  `make deps` builds the `airplayrelay` sidecar via `cargo build --release`. The
+  airplay2-rs crate is pinned to a rev in `native/airplayrelay/Cargo.toml`.
 - `third_party/` has a nested `go.mod` so the parent's `./...` ignores the
-  vendored submodules (some contain unrelated Go source).
+  vendored submodule(s).
 
 ## Data flow
 
 ```
 audiotee (PCM s16le/44100/stereo) -> capture.Reader
    -> output.Broadcaster (tees chunks to each Output; per-output start delay = prepended silence)
-       -> output.Cast: live WAV stream over HTTP, go-chromecast Load(url, "audio/wav", detach)
-       -> output.BT:   pipe PCM to `airtoothaudio render --device-uid <uid>` (AVAudioSourceNode -> AUHAL device)
+       -> output.Cast:    live WAV stream over HTTP, go-chromecast Load(url, "audio/wav", detach)
+       -> output.AirPlay: pipe PCM to `airplayrelay render --device <id>` (airplay2-rs stream_audio)
+       -> output.BT:      pipe PCM to `chorusaudio render --device-uid <uid>` (AVAudioSourceNode -> AUHAL device)
 ```
+
+`AirPlay` and `BT` are `Prestarter`s: their sidecar PIDs are excluded from the
+capture tap so their own playback doesn't feed back into the capture.
 
 A slow output drops chunks rather than stalling the others (see `pump`).
 
@@ -67,19 +75,25 @@ A slow output drops chunks rather than stalling the others (see `pump`).
 - **Concurrency:** one goroutine per output; channels for the audio pipeline;
   clean ctx-cancellation shutdown (no leaked goroutines or child processes).
 - **Time/latency:** offsets are `time.Duration`; flags use units (`--offset name=2s`).
-- **Sidecars over cgo:** prefer a small Swift/CLI sidecar (audiotee, airtoothaudio)
-  to reach Apple audio APIs, rather than cgo, unless cgo is unavoidable.
-- **Don't reimplement protocols:** use go-chromecast for Cast; don't hand-roll
-  AirPlay crypto (that's why RAOP is parked, not rebuilt).
+- **Sidecars over cgo:** prefer a small Swift/Rust/CLI sidecar (audiotee,
+  chorusaudio, airplayrelay) to reach platform/protocol APIs, rather than
+  cgo, unless cgo is unavoidable.
+- **Don't reimplement protocols:** use go-chromecast for Cast and airplay2-rs
+  (via airplayrelay) for AirPlay 2; don't hand-roll AirPlay/HomeKit crypto.
 
 ## Platform realities (don't fight these)
 
 - Core Audio process taps require **macOS 14.2+** and the
   `NSAudioCaptureUsageDescription` permission (prompted on first capture; some
   terminals don't surface it — use Terminal.app).
-- **Cast is pull-based**: the device fetches a URL from an HTTP server airtooth
+- **Cast is pull-based**: the device fetches a URL from an HTTP server chorus
   hosts on the LAN IP. WAV/PCM is lowest-latency and needs no encoder; MP3 lags
   multiple seconds. Cast buffers seconds regardless — align other outputs to it.
+- **AirPlay 2 output** = the `airplayrelay` sidecar scans (`_airplay._tcp`),
+  HomeKit-pairs (creds persisted to `~/Library/Application Support/chorus/
+  airplay/pairings.json`), and streams live PCM via airplay2-rs. First-time
+  pairing may need a PIN (`--pin`); AirPlay buffers ~2s, so align other outputs
+  to it. Apple TVs use transient pairing; HomePods require the encryption path.
 - **Bluetooth output** = a normal CoreAudio device once paired (manual macOS
   step). The Swift helper renders to it by UID via AUHAL + AVAudioSourceNode.
 - **Clock drift** is the core hard problem: independent clocks drift over minutes;
@@ -93,7 +107,11 @@ When touching the fan-out/offset path, preserve the ability to measure this.
 ## Notes for the assistant
 
 - Verify a path exists before referencing it; the architecture pivoted from
-  AirPlay/RAOP to Cast+Bluetooth, so older notes may be stale.
-- The live WAV-over-HTTP Cast path is the main unverified risk — confirm on real
-  hardware; ffmpeg→FLAC is the documented fallback.
+  classic-AirPlay/RAOP (libraop cgo, now removed) to Cast + AirPlay 2 + Bluetooth,
+  so older notes may be stale.
+- **Unverified on hardware:** the live WAV-over-HTTP Cast path (ffmpeg→FLAC is the
+  fallback) and the AirPlay 2 *streaming/pairing* path. Discovery (`airplayrelay
+  list`) is confirmed working; actually playing to a receiver — especially PIN
+  pairing and HomePod's required encryption — still needs a real-hardware pass.
+  airplay2-rs is early-stage (v0.1).
 - Ask before committing or pushing.

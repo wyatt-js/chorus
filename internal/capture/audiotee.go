@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/wyattjs/airtooth-sync/internal/audio"
+	"github.com/wyattjs/chorus/internal/audio"
 )
 
 // Capture is a running audiotee process. Read PCM from PCM; the bytes are
@@ -67,10 +67,10 @@ func (c *Capture) Stop() {
 	}
 }
 
-// findAudiotee locates the audiotee binary: $airtooth_AUDIOTEE, then the built
+// findAudiotee locates the audiotee binary: $CHORUS_AUDIOTEE, then the built
 // submodule under the working directory, then $PATH.
 func findAudiotee() (string, error) {
-	if p := os.Getenv("airtooth_AUDIOTEE"); p != "" {
+	if p := os.Getenv("CHORUS_AUDIOTEE"); p != "" {
 		return p, nil
 	}
 	local := filepath.Join("third_party", "audiotee", ".build", "release", "audiotee")
@@ -80,5 +80,5 @@ func findAudiotee() (string, error) {
 	if p, err := exec.LookPath("audiotee"); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("capture: audiotee not found (run `make deps`, set $airtooth_AUDIOTEE, or put it on $PATH)")
+	return "", fmt.Errorf("capture: audiotee not found (run `make deps`, set $CHORUS_AUDIOTEE, or put it on $PATH)")
 }

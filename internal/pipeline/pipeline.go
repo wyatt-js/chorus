@@ -6,9 +6,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/wyattjs/airtooth-sync/internal/audio"
-	"github.com/wyattjs/airtooth-sync/internal/capture"
-	"github.com/wyattjs/airtooth-sync/internal/output"
+	"github.com/wyattjs/chorus/internal/audio"
+	"github.com/wyattjs/chorus/internal/capture"
+	"github.com/wyattjs/chorus/internal/output"
 )
 
 // Target is an output plus the delay applied to its stream.

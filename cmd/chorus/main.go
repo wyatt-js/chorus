@@ -1,4 +1,4 @@
-// Command airtooth captures macOS system audio and relays it to AirPlay/Bluetooth
+// Command chorus captures macOS system audio and relays it to AirPlay/Bluetooth
 // speakers, time-aligned. Phase 0 supports a single AirPlay output.
 package main
 
@@ -11,7 +11,7 @@ import (
 
 func main() {
 	root := &cobra.Command{
-		Use:           "airtooth",
+		Use:           "chorus",
 		Short:         "Synchronized multi-device audio relay",
 		SilenceUsage:  true,
 		SilenceErrors: true,

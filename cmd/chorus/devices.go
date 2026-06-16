@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/wyattjs/airtooth-sync/internal/discover"
-	"github.com/wyattjs/airtooth-sync/internal/output"
+	"github.com/wyattjs/chorus/internal/discover"
+	"github.com/wyattjs/chorus/internal/output"
 )
 
 func devicesCmd() *cobra.Command {
@@ -17,7 +17,7 @@ func devicesCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "devices",
-		Short: "List Google Cast and audio output (Bluetooth) devices",
+		Short: "List Google Cast, AirPlay, and audio output (Bluetooth) devices",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -33,6 +33,22 @@ func devicesCmd() *cobra.Command {
 				fmt.Fprintln(tw, "  NAME\tADDRESS\tPORT")
 				for _, c := range casts {
 					fmt.Fprintf(tw, "  %s\t%s\t%d\n", c.Name, c.Host, c.Port)
+				}
+				tw.Flush()
+			}
+
+			airs, err := output.ListAirPlayDevices(ctx)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stdout, "\nAirPlay receivers:")
+			if len(airs) == 0 {
+				fmt.Fprintln(os.Stdout, "  (none found)")
+			} else {
+				tw = tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+				fmt.Fprintln(tw, "  NAME\tADDRESS\tPROTOCOL\tID")
+				for _, a := range airs {
+					fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", a.Name, a.Addr, a.Proto, a.ID)
 				}
 				tw.Flush()
 			}

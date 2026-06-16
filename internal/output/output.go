@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/wyattjs/airtooth-sync/internal/audio"
+	"github.com/wyattjs/chorus/internal/audio"
 )
 
 // ChunkFrames is the PCM granule the broadcaster reads and forwards (10ms at

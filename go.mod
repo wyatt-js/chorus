@@ -1,4 +1,4 @@
-module github.com/wyattjs/airtooth-sync
+module github.com/wyattjs/chorus
 
 go 1.25.5
 

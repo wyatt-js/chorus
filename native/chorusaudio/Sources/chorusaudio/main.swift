@@ -1,9 +1,9 @@
-// airtoothaudio — a small CoreAudio helper for airtooth.
+// chorusaudio — a small CoreAudio helper for chorus.
 //
-//   airtoothaudio list
+//   chorusaudio list
 //       Print output-capable audio devices as TSV: uid<TAB>transport<TAB>name
 //
-//   airtoothaudio render --device-uid <uid>
+//   chorusaudio render --device-uid <uid>
 //       Read s16le / 44100Hz / stereo PCM from stdin and play it to the device
 //       with the given UID (e.g. a paired Bluetooth soundbar).
 //
@@ -82,7 +82,7 @@ func deviceID(forUID uid: String) -> AudioDeviceID? {
 }
 
 func die(_ msg: String) -> Never {
-  FileHandle.standardError.write("airtoothaudio: \(msg)\n".data(using: .utf8)!)
+  FileHandle.standardError.write("chorusaudio: \(msg)\n".data(using: .utf8)!)
   exit(1)
 }
 
@@ -232,9 +232,9 @@ case "render":
       i += 1
     }
   }
-  guard let u = uid else { die("usage: airtoothaudio render --device-uid <uid>") }
+  guard let u = uid else { die("usage: chorusaudio render --device-uid <uid>") }
   runRender(uid: u)
 default:
-  FileHandle.standardError.write("usage: airtoothaudio (list | render --device-uid <uid>)\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: chorusaudio (list | render --device-uid <uid>)\n".data(using: .utf8)!)
   exit(2)
 }

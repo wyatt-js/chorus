@@ -1,0 +1,22 @@
+[package]
+name = "airplayrelay"
+version = "0.1.0"
+edition = "2021"
+description = "chorus AirPlay 2 sidecar: list receivers and stream s16le PCM from stdin"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "airplayrelay"
+path = "src/main.rs"
+
+[dependencies]
+# Pure-Rust AirPlay 2 stack (discovery, HomeKit pairing, live PCM streaming).
+# Pinned to a known-good revision — this crate is early-stage (v0.1).
+airplay2 = { git = "https://github.com/jburnhams/airplay2-rs", rev = "527884f916d5860e39ab54b5cd272ba700f270bc" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+# A relay should start fast and stay small; opt for size without losing speed.
+opt-level = 2

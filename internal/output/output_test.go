@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wyattjs/airtooth-sync/internal/audio"
+	"github.com/wyattjs/chorus/internal/audio"
 )
 
 func TestSilenceChunks(t *testing.T) {
