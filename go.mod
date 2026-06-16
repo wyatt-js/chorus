@@ -6,6 +6,7 @@ require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/spf13/cobra v1.10.2
 	github.com/vishen/go-chromecast v0.3.4
+	golang.org/x/term v0.44.0
 )
 
 require (

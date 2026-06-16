@@ -20,7 +20,7 @@ cgo path (libraop) has been removed — AirPlay 2 supersedes it.
 ## Layout
 
 ```
-cmd/chorus/     # cobra CLI: main, devices, play
+cmd/chorus/     # cobra CLI: main, play (interactive device picker in menu.go)
 internal/discover/   # mDNS browse: Browse (_raop._tcp), BrowseCast (_googlecast._tcp)
 internal/capture/    # audiotee sidecar wrapper -> raw PCM stream
 internal/audio/      # shared PCM Format type (StereoCD = 44100/16/2)

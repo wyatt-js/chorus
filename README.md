@@ -73,18 +73,21 @@ make test     # optional: unit tests
 ## Usage
 
 ```sh
-chorus devices                                   # list Cast + AirPlay + Bluetooth devices
+chorus play                                      # interactive picker: multi-select Cast/AirPlay/Bluetooth
 chorus play --cast "The Frame"                   # cast system audio to a TV
 chorus play --airplay "HomePod"                  # stream to an AirPlay 2 receiver
 chorus play --airplay "HomePod" --bt "HW-S700D"  # fan out to an AirPlay speaker and a soundbar
 chorus play --airplay "HomePod" --bt "HW-S700D" --offset HW-S700D=2s  # delay the soundbar
 ```
 
+Run `chorus play` with no device flags in a terminal to open an interactive
+picker that scans for and lets you multi-select Cast, AirPlay, and Bluetooth
+devices (↑/↓ move · space toggle · enter confirm · q cancel). Otherwise,
 `--cast`/`--airplay`/`--bt` take a name substring and are repeatable. `--offset
 name=dur` delays one device relative to the others (manual alignment until
 calibration lands). A receiver that requires a PIN the first time accepts
 `--pin 1234`; the pairing is then saved for next time. Pair a Bluetooth device in
-macOS Settings first so it shows in `devices`. Press Ctrl-C to stop.
+macOS Settings first so it shows in the picker. Press Ctrl-C to stop.
 
 ## Roadmap
 
@@ -95,9 +98,10 @@ macOS Settings first so it shows in `devices`. Press Ctrl-C to stop.
 | 2 | **Mic auto-calibration** — chirp + FFT cross-correlation → automatic per-device delay | planned |
 | 3 | Periodic re-sync against clock drift | stretch |
 
-**Today:** `chorus devices` lists Google Cast devices (mDNS), AirPlay 2
-receivers, and CoreAudio output devices (incl. paired Bluetooth). `chorus
-play --cast … --airplay … --bt …` taps system audio and fans it out to all
+**Today:** `chorus play` opens an interactive picker that discovers Google Cast
+devices (mDNS), AirPlay 2 receivers, and CoreAudio output devices (incl. paired
+Bluetooth) and lets you multi-select across all three. `chorus play --cast …
+--airplay … --bt …` skips the picker, taps system audio, and fans it out to all
 selected devices at once, each delayable with `--offset`. Audio is
 44.1kHz/16-bit/stereo PCM throughout.
 
@@ -152,7 +156,7 @@ The headline metric is residual inter-device offset after calibration:
 - Latency figures are approximate; Cast in particular buffers several seconds, so
   align other outputs *to* it rather than expecting it to be fast.
 - Bluetooth pairing is a manual macOS step — pair the device in System Settings,
-  then it appears in `chorus devices`.
+  then it appears in the `chorus play` picker.
 - The live WAV-over-HTTP Cast path is the main thing to validate on real hardware;
   if a device rejects it, an ffmpeg→FLAC fallback is the planned alternative.
 - AirPlay 2 discovery (`airplayrelay list`) is confirmed; the streaming + pairing
