@@ -6,80 +6,94 @@ the user-facing project description.
 ## What this is
 
 `airtooth` — a macOS Go CLI that captures system audio and relays it
-time-aligned to multiple AirPlay + Bluetooth speakers, with mic+chirp acoustic
-calibration to auto-measure per-device latency. Module:
-`github.com/<user>/airtooth-sync`. Binary: `airtooth`.
+time-aligned to multiple **Google Cast** + **Bluetooth** devices, with mic+chirp
+acoustic calibration (later) to auto-measure per-device latency. Module:
+`github.com/wyattjs/airtooth-sync`. Binary: `airtooth`.
 
-## Layout (target)
+The Cast + Bluetooth path is **pure Go (no cgo)**. Classic-AirPlay/RAOP sending
+is parked behind `-tags airplay` (cgo + libraop) and is not built by default.
+
+## Layout
 
 ```
-cmd/airtooth/        # CLI entrypoint (cobra commands: devices, play, calibrate)
-internal/capture/    # Core Audio process tap (cgo or Swift sidecar glue)
-internal/output/     # per-device senders (AirPlay/RAOP, Bluetooth) + ring buffers
-internal/calibrate/  # chirp generation, mic recording, FFT cross-correlation
-internal/sync/       # delay/offset model, alignment logic
-internal/audio/      # shared audio types (frames, formats, sample rate)
+cmd/airtooth/        # cobra CLI: main, devices, play
+internal/discover/   # mDNS browse: Browse (_raop._tcp), BrowseCast (_googlecast._tcp)
+internal/capture/    # audiotee sidecar wrapper -> raw PCM stream
+internal/audio/      # shared PCM Format type (StereoCD = 44100/16/2)
+internal/output/     # Output interface, Broadcaster (fan-out + per-output delay),
+                     #   Cast (live WAV HTTP + go-chromecast), BT (airtoothaudio helper)
+internal/pipeline/   # wires capture -> broadcaster -> outputs (Run)
+internal/raop/       # PARKED: cgo libraop RAOP sender, //go:build airplay only
+native/airtoothaudio/ # Swift helper: `list` devices + `render` PCM to a CoreAudio device
+scripts/build_deps.sh, scripts/build_deps_airplay.sh
+third_party/         # audiotee + libraop submodules (nested go.mod)
 ```
 
-Keep `main` thin — wiring only. Logic lives in `internal/`.
+Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring only.
 
 ## Build / test / run
 
 ```sh
-go build ./cmd/airtooth        # build the binary
-go test ./...                  # run tests
+make deps                      # build Swift sidecars: audiotee + airtoothaudio
+make build                     # CGO_ENABLED=0 go build -o bin/airtooth ./cmd/airtooth
+make test                      # go test ./...
 go vet ./...                   # vet before committing
-gofmt -l .                     # must report no files (formatting gate)
+gofmt -l cmd internal          # must report no files (formatting gate)
 ```
 
-If a Swift sidecar is used for the audio tap, document its build step here once
-it exists.
+- Default build is pure Go. `internal/raop` is excluded by the `airplay` build
+  tag, so `go build/vet ./...` does not need cgo or libraop.
+- AirPlay path (optional): `make deps-airplay && make build-airplay`
+  (`go build -tags airplay`). Its cgo paths hardcode `macos/arm64`; libraop's
+  log-level globals (`util_loglevel`, `raop_loglevel`) are defined in the cgo
+  preamble since the app, not the library, must provide them.
+- `third_party/` has a nested `go.mod` so the parent's `./...` ignores the
+  vendored submodules (some contain unrelated Go source).
+
+## Data flow
+
+```
+audiotee (PCM s16le/44100/stereo) -> capture.Reader
+   -> output.Broadcaster (tees chunks to each Output; per-output start delay = prepended silence)
+       -> output.Cast: live WAV stream over HTTP, go-chromecast Load(url, "audio/wav", detach)
+       -> output.BT:   pipe PCM to `airtoothaudio render --device-uid <uid>` (AVAudioSourceNode -> AUHAL device)
+```
+
+A slow output drops chunks rather than stalling the others (see `pump`).
 
 ## Conventions
 
-- **Go style:** standard `gofmt`/`go vet` clean. Errors wrapped with `fmt.Errorf("...: %w", err)`.
-- **Concurrency:** one goroutine + one ring buffer per output device. Guard
-  shared state; prefer channels for the audio pipeline. Always have a clean
-  shutdown path (context cancellation) — no leaked audio goroutines.
-- **Real-time path:** avoid allocations in the per-frame hot loop; reuse buffers.
-  GC is fine elsewhere.
-- **Time/latency:** represent offsets as `time.Duration`. Be explicit about units
-  in flags (e.g. `--offset bt=120ms`).
-- **No reinventing crypto:** use an existing AirPlay/RAOP sender lib. Don't hand-roll
-  the AirPlay handshake.
+- **Go style:** `gofmt`/`go vet` clean. Errors wrapped with `fmt.Errorf("...: %w", err)`.
+- **Concurrency:** one goroutine per output; channels for the audio pipeline;
+  clean ctx-cancellation shutdown (no leaked goroutines or child processes).
+- **Time/latency:** offsets are `time.Duration`; flags use units (`--offset name=2s`).
+- **Sidecars over cgo:** prefer a small Swift/CLI sidecar (audiotee, airtoothaudio)
+  to reach Apple audio APIs, rather than cgo, unless cgo is unavoidable.
+- **Don't reimplement protocols:** use go-chromecast for Cast; don't hand-roll
+  AirPlay crypto (that's why RAOP is parked, not rebuilt).
 
 ## Platform realities (don't fight these)
 
-- Core Audio process taps require **macOS 14.2+ (14.4+ safer)** and the
-  `NSAudioCaptureUsageDescription` permission. Capture will silently fail without
-  the entitlement/permission.
-- The tap API is Obj-C/Swift — reached from Go via **cgo or a Swift helper
-  process**. cgo is where most friction lives; isolate it behind `internal/capture`.
-- **Clock drift is the core hard problem:** AirPlay and BT run on independent
-  clocks. A one-time offset drifts over minutes. Static offset is acceptable for
-  short sessions; periodic recalibration is the real fix (Phase 3). Don't assume
-  a single calibration holds forever.
-- Latency ballparks: AirPlay 2 ~1–2s buffered, BT A2DP ~150–300ms (codec-dependent).
-
-## Build phases (current focus)
-
-- **P0:** capture system audio → single AirPlay output. Prove the pipe.
-- **P1:** add a second (BT) output; per-device ring buffers; manual `--offset`.
-- **P2 (centerpiece):** mic auto-calibration (chirp → FFT cross-correlation →
-  per-device delay). Keep `--offset` as a manual override.
-- **P3 (stretch):** periodic re-sync for drift; optional iPhone-as-source.
-
-Out of scope for v1: iPhone acting as an AirPlay receiver/source.
+- Core Audio process taps require **macOS 14.2+** and the
+  `NSAudioCaptureUsageDescription` permission (prompted on first capture; some
+  terminals don't surface it — use Terminal.app).
+- **Cast is pull-based**: the device fetches a URL from an HTTP server airtooth
+  hosts on the LAN IP. WAV/PCM is lowest-latency and needs no encoder; MP3 lags
+  multiple seconds. Cast buffers seconds regardless — align other outputs to it.
+- **Bluetooth output** = a normal CoreAudio device once paired (manual macOS
+  step). The Swift helper renders to it by UID via AUHAL + AVAudioSourceNode.
+- **Clock drift** is the core hard problem: independent clocks drift over minutes;
+  a static offset is fine short-term, periodic recalibration is the real fix (P3).
 
 ## Success metric
 
-Residual inter-device offset after calibration (target ~250ms → <15ms). When
-touching the sync/calibration path, preserve the ability to measure this.
+Residual inter-device offset after calibration (target large-uncorrected → <15ms).
+When touching the fan-out/offset path, preserve the ability to measure this.
 
 ## Notes for the assistant
 
-- The repo may be mostly empty early on — propose structure rather than assuming
-  files exist; verify before referencing a path.
-- Don't introduce a heavy DSP/audio dependency without flagging the tradeoff;
-  prefer `gonum`/`go-dsp` for FFT.
+- Verify a path exists before referencing it; the architecture pivoted from
+  AirPlay/RAOP to Cast+Bluetooth, so older notes may be stale.
+- The live WAV-over-HTTP Cast path is the main unverified risk — confirm on real
+  hardware; ffmpeg→FLAC is the documented fallback.
 - Ask before committing or pushing.
