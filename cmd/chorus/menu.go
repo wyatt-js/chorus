@@ -282,6 +282,10 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 	fmt.Print(hideCursor)
 	defer fmt.Print(showCursor)
 
+	// The cursor walks the flattened device list plus one extra slot at the end:
+	// the Submit button. submitIdx is that final position.
+	submitIdx := len(flat)
+
 	cursor := 0
 	prevLines := 0
 	render := func() {
@@ -293,6 +297,15 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 	}
 	render()
 
+	confirm := func() (chosen []*menuItem) {
+		for _, it := range flat {
+			if it.selected {
+				chosen = append(chosen, it)
+			}
+		}
+		return chosen
+	}
+
 	in := make([]byte, 8)
 	for {
 		n, err := os.Stdin.Read(in)
@@ -303,16 +316,18 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 		case in[0] == 3 || in[0] == 'q' || (n == 1 && in[0] == 27): // ctrl-c, q, esc
 			fmt.Print("\r\n")
 			return nil, false, nil
-		case in[0] == '\r' || in[0] == '\n': // enter -> confirm
-			var chosen []*menuItem
-			for _, it := range flat {
-				if it.selected {
-					chosen = append(chosen, it)
-				}
+		case in[0] == '\r' || in[0] == '\n': // enter -> toggle device, or confirm on Submit
+			if cursor == submitIdx {
+				fmt.Print("\r\n")
+				return confirm(), true, nil
 			}
-			fmt.Print("\r\n")
-			return chosen, true, nil
-		case in[0] == ' ': // space -> toggle
+			flat[cursor].selected = !flat[cursor].selected
+			render()
+		case in[0] == ' ': // space -> toggle (also confirms on Submit)
+			if cursor == submitIdx {
+				fmt.Print("\r\n")
+				return confirm(), true, nil
+			}
 			flat[cursor].selected = !flat[cursor].selected
 			render()
 		case n >= 3 && in[0] == 27 && in[1] == '[': // arrow keys
@@ -322,7 +337,7 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 					cursor--
 				}
 			case 'B': // down
-				if cursor < len(flat)-1 {
+				if cursor < submitIdx {
 					cursor++
 				}
 			}
@@ -333,7 +348,7 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 			}
 			render()
 		case in[0] == 'j':
-			if cursor < len(flat)-1 {
+			if cursor < submitIdx {
 				cursor++
 			}
 			render()
@@ -413,7 +428,7 @@ func renderMenu(groups []menuGroup, flat []*menuItem, cursor int) int {
 	writeln := func(s string) { b.WriteString(s + "\r\n"); lines++ }
 
 	writeln(ansiBold + "Select output devices" + ansiReset +
-		ansiDim + "  (↑/↓ move · space toggle · enter confirm · q cancel)" + ansiReset)
+		ansiDim + "  (↑/↓ move · enter toggle · Submit to confirm · q cancel)" + ansiReset)
 
 	for _, g := range groups {
 		if len(g.items) == 0 {
@@ -423,7 +438,7 @@ func renderMenu(groups []menuGroup, flat []*menuItem, cursor int) int {
 		writeln("  " + g.color + ansiBold + g.title + ansiReset)
 		for _, it := range g.items {
 			pointer := "  "
-			if flat[cursor] == it {
+			if cursor < len(flat) && flat[cursor] == it {
 				pointer = g.color + "❯ " + ansiReset
 			}
 			box := "[ ]"
@@ -439,6 +454,22 @@ func renderMenu(groups []menuGroup, flat []*menuItem, cursor int) int {
 			}
 			writeln(line)
 		}
+	}
+
+	// Submit button: the cursor's final position (index len(flat)).
+	writeln("")
+	n := 0
+	for _, it := range flat {
+		if it.selected {
+			n++
+		}
+	}
+	onSubmit := cursor == len(flat)
+	label := fmt.Sprintf(" Submit (%d selected) ", n)
+	if onSubmit {
+		writeln("  " + ansiBold + ansiGreen + "❯ " + ansiReset + ansiBold + ansiGreen + "[" + label + "]" + ansiReset)
+	} else {
+		writeln("  " + ansiDim + "  [" + label + "]" + ansiReset)
 	}
 
 	fmt.Print(b.String())
