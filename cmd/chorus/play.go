@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -58,14 +59,7 @@ func playCmd() *cobra.Command {
 				if !term.IsTerminal(int(os.Stdin.Fd())) {
 					return fmt.Errorf("select at least one output with --cast, --airplay, and/or --bt, or run `chorus play` in a terminal to pick interactively")
 				}
-				targets, err = pickTargets(ctx, wait, volume, pin, offMap)
-				if err != nil {
-					return err
-				}
-				if len(targets) == 0 {
-					return fmt.Errorf("no devices selected")
-				}
-				return pipeline.Run(ctx, pipeline.Options{Targets: targets})
+				return playInteractive(ctx, wait, volume, pin, offMap)
 			}
 
 			if len(casts) > 0 {
@@ -148,39 +142,180 @@ func btTarget(dev output.Device, offMap map[string]time.Duration) pipeline.Targe
 	}
 }
 
-// pickTargets scans for all devices, runs the interactive picker, and converts
-// the user's selection into pipeline targets.
-func pickTargets(ctx context.Context, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) ([]pipeline.Target, error) {
-	// Discover in the background; keep the banner animating until it finishes.
+// activeEntry tracks a currently-playing device so the menu can diff against it.
+type activeEntry struct {
+	name   string // Output.Name(), used to remove the sink
+	btAddr string // non-empty => Bluetooth, for OS-level disconnect on deselect
+}
+
+// targetForItem turns a chosen menu item into a pipeline target, connecting a
+// Bluetooth device first (with the spinner). The returned address is non-empty
+// only for Bluetooth, so it can be OS-disconnected later.
+func targetForItem(ctx context.Context, it *menuItem, volume int, pin string, offMap map[string]time.Duration) (pipeline.Target, string, error) {
+	switch {
+	case it.cast != nil:
+		return castTarget(*it.cast, volume, offMap), "", nil
+	case it.airplay != nil:
+		return airplayTarget(*it.airplay, pin, offMap), "", nil
+	case it.bt != nil:
+		dev, err := connectBluetooth(ctx, *it.bt)
+		if err != nil {
+			return pipeline.Target{}, "", err
+		}
+		return btTarget(dev, offMap), it.bt.Address, nil
+	}
+	return pipeline.Target{}, "", fmt.Errorf("unknown device")
+}
+
+// playInteractive runs the first device pick, starts the session, then hands off
+// to the in-session control loop (reopen menu, sync, quit).
+func playInteractive(parent context.Context, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	// First pick, with the animated banner running until discovery finishes.
 	done := make(chan struct{})
 	var groups []menuGroup
-	go func() {
-		groups = discoverAll(ctx, wait)
-		close(done)
-	}()
+	go func() { groups = discoverAll(ctx, wait); close(done) }()
 	animateBanner(done)
 
-	chosen, err := selectDevices(groups)
+	chosen, confirmed, err := selectDevices(groups, nil)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if !confirmed || len(chosen) == 0 {
+		return fmt.Errorf("no devices selected")
 	}
 
+	active := map[string]activeEntry{}
 	var targets []pipeline.Target
 	for _, it := range chosen {
-		switch {
-		case it.cast != nil:
-			targets = append(targets, castTarget(*it.cast, volume, offMap))
-		case it.airplay != nil:
-			targets = append(targets, airplayTarget(*it.airplay, pin, offMap))
-		case it.bt != nil:
-			dev, err := connectBluetooth(ctx, *it.bt)
-			if err != nil {
-				return nil, err
-			}
-			targets = append(targets, btTarget(dev, offMap))
+		t, addr, err := targetForItem(ctx, it, volume, pin, offMap)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, t)
+		active[it.key] = activeEntry{name: t.Output.Name(), btAddr: addr}
+	}
+
+	sess := pipeline.NewSession(audio.StereoCD)
+	if err := sess.Start(ctx, targets); err != nil {
+		return err
+	}
+	return controlLoop(ctx, cancel, sess, active, wait, volume, pin, offMap)
+}
+
+// controlLoop reads single-key commands while audio streams: m = reopen the
+// device menu, s = synchronize, q/Ctrl-C = quit. The session keeps playing the
+// whole time.
+func controlLoop(ctx context.Context, cancel context.CancelFunc, sess *pipeline.Session, active map[string]activeEntry, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) error {
+	fd := int(os.Stdin.Fd())
+	old, err := term.MakeRaw(fd)
+	if err != nil {
+		return sess.Wait() // no key control; just stream until cancelled
+	}
+	defer term.Restore(fd, old)
+
+	printStatus(active)
+	buf := make([]byte, 8)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			cancel()
+			return sess.Wait()
+		}
+		switch buf[0] {
+		case 'q', 3: // q, Ctrl-C
+			cancel()
+			return sess.Wait()
+		case 'm':
+			handleMenu(ctx, sess, active, wait, volume, pin, offMap)
+			printStatus(active)
+		case 's':
+			fmt.Print("\r\n  " + ansiDim + "synchronize: calibration (P2) not yet implemented" + ansiReset + "\r\n")
+			printStatus(active)
 		}
 	}
-	return targets, nil
+}
+
+// handleMenu reopens the picker pre-selected with the active set, diffs the
+// result, and applies it: deselected devices are disconnected (Bluetooth fully),
+// newly selected ones are added (unchanged ones keep playing untouched).
+func handleMenu(ctx context.Context, sess *pipeline.Session, active map[string]activeEntry, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) {
+	done := make(chan struct{})
+	var groups []menuGroup
+	stop := startSpinner("rescanning devices…")
+	go func() { groups = discoverAll(ctx, wait); close(done) }()
+	<-done
+	stop("")
+
+	preselect := make(map[string]bool, len(active))
+	for k := range active {
+		preselect[k] = true
+	}
+
+	chosen, confirmed, err := selectDevices(groups, preselect)
+	if err != nil {
+		fmt.Printf("\r\n  menu error: %v\r\n", err)
+		return
+	}
+	if !confirmed {
+		return // cancelled; leave the active set unchanged
+	}
+
+	selected := make(map[string]*menuItem, len(chosen))
+	for _, it := range chosen {
+		selected[it.key] = it
+	}
+
+	// Removals: active keys no longer selected.
+	var removeNames, removeAddrs []string
+	for k, e := range active {
+		if _, keep := selected[k]; keep {
+			continue
+		}
+		removeNames = append(removeNames, e.name)
+		if e.btAddr != "" {
+			removeAddrs = append(removeAddrs, e.btAddr)
+		}
+		delete(active, k)
+	}
+
+	// Additions: selected keys not already active.
+	var addTargets []pipeline.Target
+	for k, it := range selected {
+		if _, exists := active[k]; exists {
+			continue
+		}
+		t, addr, err := targetForItem(ctx, it, volume, pin, offMap)
+		if err != nil {
+			fmt.Printf("\r\n  could not add %s: %v\r\n", it.label, err)
+			continue
+		}
+		addTargets = append(addTargets, t)
+		active[k] = activeEntry{name: t.Output.Name(), btAddr: addr}
+	}
+
+	if err := sess.Apply(ctx, addTargets, removeNames); err != nil {
+		fmt.Printf("\r\n  applying changes failed: %v\r\n", err)
+	}
+	for _, addr := range removeAddrs {
+		if err := output.DisconnectBluetooth(ctx, addr); err != nil {
+			fmt.Printf("\r\n  disconnect failed: %v\r\n", err)
+		}
+	}
+}
+
+// printStatus shows the playback status bar and key hints.
+func printStatus(active map[string]activeEntry) {
+	names := make([]string, 0, len(active))
+	for _, e := range active {
+		names = append(names, e.name)
+	}
+	sort.Strings(names)
+	fmt.Printf("\r\n%s▶%s playing to %d device(s): %s\r\n   %s[m]%s menu   %s[s]%s sync   %s[q]%s quit\r\n",
+		ansiGreen, ansiReset, len(names), strings.Join(names, ", "),
+		ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset)
 }
 
 func matchCast(devs []discover.CastDevice, name string) (discover.CastDevice, error) {

@@ -190,6 +190,25 @@ func ConnectBluetooth(ctx context.Context, address string) error {
 	return nil
 }
 
+// DisconnectBluetooth drops the OS-level connection to a paired Bluetooth device
+// by address, so it stops being a CoreAudio output. A no-op if already off.
+func DisconnectBluetooth(ctx context.Context, address string) error {
+	bin, err := helperPath()
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, bin, "bt-disconnect", "--address", address)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
+}
+
 // helperPath locates the chorusaudio binary: $CHORUS_AUDIO, then the built
 // package under the working directory, then $PATH.
 func helperPath() (string, error) {

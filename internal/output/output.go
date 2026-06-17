@@ -5,6 +5,8 @@ package output
 import (
 	"context"
 	"io"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/wyattjs/chorus/internal/audio"
@@ -49,31 +51,42 @@ func (b *Broadcaster) Prestart(ctx context.Context) ([]int, error) {
 	return pids, nil
 }
 
-// sink couples an Output with its delivery channel and start offset.
+// sink couples an Output with its delivery channel, start offset, and a cancel
+// that stops just this output (for live removal).
 type sink struct {
 	out    Output
 	ch     chan []byte
 	offset time.Duration
+	cancel context.CancelFunc
 }
 
-// Broadcaster reads PCM from a single source and tees it to every registered
-// Output. A slow output is allowed to drop chunks rather than stall the others.
+// Broadcaster reads PCM from a single source (via Feed) and tees it to every
+// registered Output. Outputs can be added and removed while it runs. A slow
+// output drops chunks rather than stalling the others.
 type Broadcaster struct {
-	format audio.Format
-	sinks  []sink
+	format  audio.Format
+	pcmCh   chan []byte
+	mu      sync.Mutex
+	sinks   []sink
+	rootCtx context.Context
 }
 
-func New(format audio.Format) *Broadcaster { return &Broadcaster{format: format} }
+func New(format audio.Format) *Broadcaster {
+	return &Broadcaster{format: format, pcmCh: make(chan []byte, 16)}
+}
 
-// Add registers an output. offset delays this output's stream relative to the
-// others by prepending that much silence.
+// Add registers an output before Start. offset delays this output's stream
+// relative to the others by prepending that much silence.
 func (b *Broadcaster) Add(out Output, offset time.Duration) {
-	// Buffer ~2s so a briefly-slow output (e.g. Cast connecting) doesn't drop.
-	b.sinks = append(b.sinks, sink{out: out, ch: make(chan []byte, 200), offset: offset})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sinks = append(b.sinks, sink{out: out, offset: offset})
 }
 
 // Outputs returns the registered outputs (for logging).
 func (b *Broadcaster) Outputs() []Output {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	outs := make([]Output, len(b.sinks))
 	for i, s := range b.sinks {
 		outs[i] = s.out
@@ -81,37 +94,70 @@ func (b *Broadcaster) Outputs() []Output {
 	return outs
 }
 
-// Run starts every output and pumps src to all of them until ctx is cancelled or
-// src ends. It returns the first output error, if any.
-func (b *Broadcaster) Run(ctx context.Context, src io.Reader) error {
-	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
-	errc := make(chan error, len(b.sinks))
-
-	for _, s := range b.sinks {
-		// Pre-fill with offset worth of silence to delay this output's audio.
-		for i := 0; i < silenceChunks(s.offset); i++ {
-			s.ch <- make([]byte, chunkBytes)
-		}
-		go func(s sink) { errc <- s.out.Run(ctx, s.ch) }(s)
+// Start launches the fan-out and every registered output. ctx is the session
+// root: cancelling it stops all outputs.
+func (b *Broadcaster) Start(ctx context.Context) {
+	b.mu.Lock()
+	b.rootCtx = ctx
+	for i := range b.sinks {
+		b.launchLocked(&b.sinks[i])
 	}
-
-	readErr := pump(ctx, src, chunkBytes, b.sinks)
-
-	// Signal end-of-stream to outputs and collect their results.
-	for _, s := range b.sinks {
-		close(s.ch)
-	}
-	for range b.sinks {
-		if err := <-errc; err != nil && readErr == nil {
-			readErr = err
-		}
-	}
-	return readErr
+	b.mu.Unlock()
+	go b.fanOut(ctx)
 }
 
-// pump reads fixed chunks from src and fans each out to every sink. Each chunk is
-// freshly allocated so sinks can safely share the (read-only) slice.
-func pump(ctx context.Context, src io.Reader, chunkBytes int, sinks []sink) error {
+// AddSink adds and starts an output while the session is running.
+func (b *Broadcaster) AddSink(out Output, offset time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := sink{out: out, offset: offset}
+	b.launchLocked(&s)
+	b.sinks = append(b.sinks, s)
+}
+
+// RemoveSink stops and drops every output with the given name.
+func (b *Broadcaster) RemoveSink(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	kept := b.sinks[:0]
+	for _, s := range b.sinks {
+		if s.out.Name() == name {
+			if s.cancel != nil {
+				s.cancel()
+			}
+			continue
+		}
+		kept = append(kept, s)
+	}
+	b.sinks = kept
+}
+
+// launchLocked sizes the sink's channel to hold its offset of priming silence,
+// pre-fills it, and starts the output. Caller holds b.mu.
+func (b *Broadcaster) launchLocked(s *sink) {
+	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
+	n := silenceChunks(s.offset)
+	// Size the buffer to fit the priming silence plus ~2s headroom so priming
+	// never blocks before the output starts draining.
+	s.ch = make(chan []byte, n+200)
+	for range n {
+		s.ch <- make([]byte, chunkBytes)
+	}
+	sctx, cancel := context.WithCancel(b.rootCtx)
+	s.cancel = cancel
+	out, ch := s.out, s.ch
+	go func() {
+		if err := out.Run(sctx, ch); err != nil && sctx.Err() == nil {
+			log.Printf("output %s: %v", out.Name(), err)
+		}
+	}()
+}
+
+// Feed reads fixed PCM chunks from src into the fan-out until ctx is cancelled or
+// src ends. The Session calls this once per capture tap (again after a tap
+// restart), feeding the same persistent fan-out so outputs aren't torn down.
+func (b *Broadcaster) Feed(ctx context.Context, src io.Reader) error {
+	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil
@@ -123,11 +169,31 @@ func pump(ctx context.Context, src io.Reader, chunkBytes int, sinks []sink) erro
 			}
 			return err
 		}
-		for _, s := range sinks {
-			select {
-			case s.ch <- buf:
-			default: // sink is behind; drop this chunk rather than stall everyone
+		select {
+		case b.pcmCh <- buf:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// fanOut tees each PCM chunk to every current sink, dropping for any sink that's
+// behind rather than stalling the rest. Each chunk is freshly allocated so sinks
+// can safely share the (read-only) slice.
+func (b *Broadcaster) fanOut(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case buf := <-b.pcmCh:
+			b.mu.Lock()
+			for _, s := range b.sinks {
+				select {
+				case s.ch <- buf:
+				default: // sink is behind; drop rather than stall everyone
+				}
 			}
+			b.mu.Unlock()
 		}
 	}
 }

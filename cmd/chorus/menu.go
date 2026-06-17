@@ -16,6 +16,7 @@ import (
 
 // menuItem is a single selectable output device in the interactive picker.
 type menuItem struct {
+	key      string // stable identity, e.g. "cast:Frame" / "airplay:<id>" / "bt:<addr>"
 	label    string // friendly device name
 	status   string // pre-colored badge shown after the label (e.g. connection state)
 	detail   string // secondary info shown dimmed (address / transport)
@@ -215,6 +216,7 @@ func discoverAll(ctx context.Context, wait time.Duration) []menuGroup {
 	for i := range casts {
 		c := casts[i]
 		castGroup.items = append(castGroup.items, &menuItem{
+			key:    "cast:" + c.Name,
 			label:  c.Name,
 			detail: fmt.Sprintf("%s:%d", c.Host, c.Port),
 			cast:   &c,
@@ -225,6 +227,7 @@ func discoverAll(ctx context.Context, wait time.Duration) []menuGroup {
 	for i := range airs {
 		a := airs[i]
 		airGroup.items = append(airGroup.items, &menuItem{
+			key:     "airplay:" + a.ID,
 			label:   a.Name,
 			detail:  fmt.Sprintf("%s · %s", a.Addr, a.Proto),
 			airplay: &a,
@@ -239,6 +242,7 @@ func discoverAll(ctx context.Context, wait time.Duration) []menuGroup {
 			status = ansiGreen + "● connected" + ansiReset
 		}
 		btGroup.items = append(btGroup.items, &menuItem{
+			key:    "bt:" + d.Address,
 			label:  d.Name,
 			status: status,
 			detail: d.Address,
@@ -250,21 +254,28 @@ func discoverAll(ctx context.Context, wait time.Duration) []menuGroup {
 }
 
 // selectDevices runs the interactive multi-select picker over the given groups
-// and returns the items the user chose. It returns nil if the user cancels.
-func selectDevices(groups []menuGroup) ([]*menuItem, error) {
+// and returns the items the user chose. Items whose key is in preselect start
+// checked (used on menu re-entry to reflect the currently-playing set). It
+// returns confirmed=false if the user cancels (vs. confirming an empty set).
+func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*menuItem, confirmed bool, err error) {
 	// Flatten selectable items for cursor navigation.
 	var flat []*menuItem
 	for _, g := range groups {
 		flat = append(flat, g.items...)
 	}
 	if len(flat) == 0 {
-		return nil, fmt.Errorf("no Cast, AirPlay, or Bluetooth output devices found")
+		return nil, false, fmt.Errorf("no Cast, AirPlay, or Bluetooth output devices found")
+	}
+	for _, it := range flat {
+		if preselect[it.key] {
+			it.selected = true
+		}
 	}
 
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
-		return nil, fmt.Errorf("interactive picker needs a terminal: %w", err)
+		return nil, false, fmt.Errorf("interactive picker needs a terminal: %w", err)
 	}
 	defer term.Restore(fd, oldState)
 
@@ -286,12 +297,12 @@ func selectDevices(groups []menuGroup) ([]*menuItem, error) {
 	for {
 		n, err := os.Stdin.Read(in)
 		if err != nil || n == 0 {
-			return nil, fmt.Errorf("input closed")
+			return nil, false, fmt.Errorf("input closed")
 		}
 		switch {
 		case in[0] == 3 || in[0] == 'q' || (n == 1 && in[0] == 27): // ctrl-c, q, esc
 			fmt.Print("\r\n")
-			return nil, nil
+			return nil, false, nil
 		case in[0] == '\r' || in[0] == '\n': // enter -> confirm
 			var chosen []*menuItem
 			for _, it := range flat {
@@ -300,7 +311,7 @@ func selectDevices(groups []menuGroup) ([]*menuItem, error) {
 				}
 			}
 			fmt.Print("\r\n")
-			return chosen, nil
+			return chosen, true, nil
 		case in[0] == ' ': // space -> toggle
 			flat[cursor].selected = !flat[cursor].selected
 			render()

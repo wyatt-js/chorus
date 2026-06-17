@@ -83,12 +83,20 @@ chorus play --airplay "HomePod" --bt "HW-S700D" --offset HW-S700D=2s  # delay th
 
 Run `chorus play` with no device flags in a terminal to open an interactive
 picker that scans for and lets you multi-select Cast, AirPlay, and Bluetooth
-devices (↑/↓ move · space toggle · enter confirm · q cancel). Otherwise,
-`--cast`/`--airplay`/`--bt` take a name substring and are repeatable. `--offset
-name=dur` delays one device relative to the others (manual alignment until
-calibration lands). A receiver that requires a PIN the first time accepts
+devices (↑/↓ move · space toggle · enter confirm · q cancel). While it's playing,
+single-key controls stay live: **`m`** reopens the menu (current devices
+pre-selected) so you can add or drop devices — unchanged ones keep playing;
+deselecting a device disconnects it (Bluetooth is fully OS-disconnected); adding
+a Bluetooth/AirPlay device briefly re-taps audio (~sub-second gap on all,
+nothing disconnects). **`s`** is reserved for synchronize (mic calibration, P2 —
+placeholder for now). **`q`** quits.
+
+Otherwise, `--cast`/`--airplay`/`--bt` take a name substring and are repeatable
+(this flag form streams to a fixed set until Ctrl-C — no in-session menu).
+`--offset name=dur` delays one device relative to the others (manual alignment
+until calibration lands). A receiver that requires a PIN the first time accepts
 `--pin 1234`; the pairing is then saved for next time. Pair a Bluetooth device in
-macOS Settings first so it shows in the picker. Press Ctrl-C to stop.
+macOS Settings first so it shows in the picker.
 
 ## Roadmap
 

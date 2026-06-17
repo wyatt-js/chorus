@@ -243,6 +243,19 @@ func runBTConnect(address: String) {
   }
 }
 
+// runBTDisconnect drops the baseband connection to the device, so it stops being
+// a CoreAudio output. A no-op if it's already disconnected.
+func runBTDisconnect(address: String) {
+  guard let d = IOBluetoothDevice(addressString: address) else {
+    die("no Bluetooth device with address \(address)")
+  }
+  if !d.isConnected() { return }
+  let res = d.closeConnection()
+  if res != kIOReturnSuccess {
+    die("closeConnection to \(address) failed (IOReturn \(res))")
+  }
+}
+
 func runRender(uid: String) {
   guard let dev = deviceID(forUID: uid) else { die("no output device with UID \(uid)") }
 
@@ -335,6 +348,19 @@ case "bt-connect":
   }
   guard let a = address else { die("usage: chorusaudio bt-connect --address <addr>") }
   runBTConnect(address: a)
+case "bt-disconnect":
+  var address: String?
+  var i = 1
+  while i < args.count {
+    if args[i] == "--address", i + 1 < args.count {
+      address = args[i + 1]
+      i += 2
+    } else {
+      i += 1
+    }
+  }
+  guard let a = address else { die("usage: chorusaudio bt-disconnect --address <addr>") }
+  runBTDisconnect(address: a)
 case "render":
   var uid: String?
   var i = 1
@@ -349,6 +375,6 @@ case "render":
   guard let u = uid else { die("usage: chorusaudio render --device-uid <uid>") }
   runRender(uid: u)
 default:
-  FileHandle.standardError.write("usage: chorusaudio (list | bt-list [--reachable-timeout <sec>] | bt-connect --address <addr> | render --device-uid <uid>)\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: chorusaudio (list | bt-list [--reachable-timeout <sec>] | bt-connect --address <addr> | bt-disconnect --address <addr> | render --device-uid <uid>)\n".data(using: .utf8)!)
   exit(2)
 }
