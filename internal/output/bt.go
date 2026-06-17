@@ -2,6 +2,7 @@ package output
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +20,15 @@ type Device struct {
 	UID       string
 	Transport string // builtin, bluetooth, usb, hdmi, airplay, ...
 	Name      string
+}
+
+// BluetoothDevice is a paired Bluetooth audio device reported by the chorusaudio
+// helper (via IOBluetooth). Unlike Device, it exists whether or not the device is
+// currently connected — connecting it is what makes it a CoreAudio output.
+type BluetoothDevice struct {
+	Address   string // hardware address, e.g. "70-8c-f2-87-20-18"
+	Name      string
+	Connected bool
 }
 
 // BT renders PCM to a CoreAudio output device (e.g. a paired Bluetooth soundbar)
@@ -106,6 +117,77 @@ func ListOutputDevices(ctx context.Context) ([]Device, error) {
 		devices = append(devices, Device{UID: parts[0], Transport: parts[1], Name: parts[2]})
 	}
 	return devices, sc.Err()
+}
+
+// ResolveOutputByName finds a CoreAudio output device by (case-insensitive)
+// name. Used to map a just-connected Bluetooth device to its renderable UID.
+func ResolveOutputByName(ctx context.Context, name string) (Device, bool, error) {
+	outs, err := ListOutputDevices(ctx)
+	if err != nil {
+		return Device{}, false, err
+	}
+	for _, d := range outs {
+		if strings.EqualFold(d.Name, name) {
+			return d, true, nil
+		}
+	}
+	return Device{}, false, nil
+}
+
+// ListBluetoothDevices returns the paired Bluetooth audio devices the helper can
+// see, each annotated with whether it is currently connected. When probe > 0,
+// disconnected devices are pinged with a baseband name request (per-device page
+// timeout = probe) and only the reachable ones — powered on and in range — are
+// returned; long-stale pairings for absent devices are hidden. Pinging is
+// serialized by the controller, so a list with several absent devices can take
+// several seconds.
+func ListBluetoothDevices(ctx context.Context, probe time.Duration) ([]BluetoothDevice, error) {
+	bin, err := helperPath()
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"bt-list"}
+	if probe > 0 {
+		args = append(args, "--reachable-timeout", strconv.FormatFloat(probe.Seconds(), 'f', -1, 64))
+	}
+	out, err := exec.CommandContext(ctx, bin, args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing Bluetooth devices: %w", err)
+	}
+
+	var devices []BluetoothDevice
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	for sc.Scan() {
+		parts := strings.SplitN(sc.Text(), "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		devices = append(devices, BluetoothDevice{
+			Address:   parts[0],
+			Connected: parts[1] == "1",
+			Name:      parts[2],
+		})
+	}
+	return devices, sc.Err()
+}
+
+// ConnectBluetooth opens a connection to a paired Bluetooth device by address so
+// it comes online as a CoreAudio output. It blocks until connected or fails.
+func ConnectBluetooth(ctx context.Context, address string) error {
+	bin, err := helperPath()
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, bin, "bt-connect", "--address", address)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // helperPath locates the chorusaudio binary: $CHORUS_AUDIO, then the built

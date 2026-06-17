@@ -31,8 +31,9 @@ heterogeneous devices and aligns them.
    - **AirPlay 2**: stream live PCM to the receiver through the `airplayrelay`
      Rust sidecar, which wraps [airplay2-rs](https://github.com/jburnhams/airplay2-rs)
      (mDNS discovery + HomeKit pairing + timed PCM).
-   - **Bluetooth**: render PCM to the paired CoreAudio output device through a
-     small Swift helper (`chorusaudio`).
+   - **Bluetooth**: list paired audio devices with their connection state, connect
+     a selected one on demand, and render PCM to it through a small Swift helper
+     (`chorusaudio`, via IOBluetooth + CoreAudio).
 4. **Align** — each output's stream is delayed by a per-device offset (manual
    `--offset` today; mic auto-calibration later) so audio reaches your ears
    from every device simultaneously.
@@ -155,8 +156,14 @@ The headline metric is residual inter-device offset after calibration:
 
 - Latency figures are approximate; Cast in particular buffers several seconds, so
   align other outputs *to* it rather than expecting it to be fast.
-- Bluetooth pairing is a manual macOS step — pair the device in System Settings,
-  then it appears in the `chorus play` picker.
+- Bluetooth *pairing* is a manual macOS step — pair the device once in System
+  Settings. After that it appears in the `chorus play` picker; selecting a
+  disconnected device connects it on the spot, no need to connect it manually
+  first. The picker only lists paired devices that answer a quick reachability
+  ping (powered on and in range), so stale pairings for devices that aren't around
+  are hidden. Classic Bluetooth has no instant presence signal, so this ping
+  serializes — a list with several absent devices can take a few seconds, and a
+  device slow to answer may be hidden (just power-cycle it and rescan).
 - The live WAV-over-HTTP Cast path is the main thing to validate on real hardware;
   if a device rejects it, an ffmpeg→FLAC fallback is the planned alternative.
 - AirPlay 2 discovery (`airplayrelay list`) is confirmed; the streaming + pairing

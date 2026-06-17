@@ -151,8 +151,14 @@ func btTarget(dev output.Device, offMap map[string]time.Duration) pipeline.Targe
 // pickTargets scans for all devices, runs the interactive picker, and converts
 // the user's selection into pipeline targets.
 func pickTargets(ctx context.Context, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) ([]pipeline.Target, error) {
-	fmt.Fprintln(os.Stderr, "Scanning for Cast, AirPlay, and Bluetooth devices…")
-	groups := discoverAll(ctx, wait)
+	// Discover in the background; keep the banner animating until it finishes.
+	done := make(chan struct{})
+	var groups []menuGroup
+	go func() {
+		groups = discoverAll(ctx, wait)
+		close(done)
+	}()
+	animateBanner(done)
 
 	chosen, err := selectDevices(groups)
 	if err != nil {
@@ -167,7 +173,11 @@ func pickTargets(ctx context.Context, wait time.Duration, volume int, pin string
 		case it.airplay != nil:
 			targets = append(targets, airplayTarget(*it.airplay, pin, offMap))
 		case it.bt != nil:
-			targets = append(targets, btTarget(*it.bt, offMap))
+			dev, err := connectBluetooth(ctx, *it.bt)
+			if err != nil {
+				return nil, err
+			}
+			targets = append(targets, btTarget(dev, offMap))
 		}
 	}
 	return targets, nil

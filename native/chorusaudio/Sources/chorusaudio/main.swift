@@ -3,6 +3,14 @@
 //   chorusaudio list
 //       Print output-capable audio devices as TSV: uid<TAB>transport<TAB>name
 //
+//   chorusaudio bt-list
+//       Print paired Bluetooth audio devices as TSV:
+//       address<TAB>connected(0|1)<TAB>name
+//
+//   chorusaudio bt-connect --address <addr>
+//       Open a connection to a paired Bluetooth device (so it comes online as a
+//       CoreAudio output). Exits 0 once connected, non-zero on failure.
+//
 //   chorusaudio render --device-uid <uid>
 //       Read s16le / 44100Hz / stereo PCM from stdin and play it to the device
 //       with the given UID (e.g. a paired Bluetooth soundbar).
@@ -14,6 +22,7 @@ import AudioToolbox
 import CoreAudio
 import Darwin
 import Foundation
+import IOBluetooth
 
 // MARK: - CoreAudio property helpers
 
@@ -154,6 +163,86 @@ func runList() {
   }
 }
 
+// MARK: - Bluetooth (IOBluetooth)
+
+// NameProbe collects the addresses of devices that answer a baseband name
+// request — i.e. are powered on and in range. The async name-request callback
+// (target/selector) fires on the run loop the probe drives.
+final class NameProbe: NSObject {
+  private(set) var reachable = Set<String>()
+  private var pending = 0
+
+  // probe fires a name request at each device and runs the run loop until every
+  // request completes or the deadline passes. A reachable device answers quickly;
+  // an off/out-of-range one consumes its full page timeout. The controller
+  // serializes paging, so the overall budget scales with the device count — that
+  // keeps a reachable device late in the queue from being cut off.
+  func probe(_ devices: [IOBluetoothDevice], perDevice: TimeInterval) {
+    // BluetoothHCIPageTimeout is in 0.625ms units; clamp to its UInt16 range.
+    let units = min(Double(UInt16.max), max(1, perDevice / 0.000625))
+    let pageTO = BluetoothHCIPageTimeout(UInt16(units))
+    for d in devices {
+      // The fixed callback remoteNameRequestComplete(_:status:) fires on self.
+      if d.remoteNameRequest(self, withPageTimeout: pageTO) == kIOReturnSuccess {
+        pending += 1
+      }
+    }
+    let budget = perDevice * Double(pending) + 2.0
+    let deadline = Date().addingTimeInterval(budget)
+    while pending > 0 && Date() < deadline {
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.2))
+    }
+  }
+
+  @objc func remoteNameRequestComplete(_ device: IOBluetoothDevice, status: IOReturn) {
+    if status == kIOReturnSuccess, let addr = device.addressString {
+      reachable.insert(addr)
+    }
+    pending -= 1
+  }
+}
+
+// runBTList prints paired Bluetooth audio devices and whether each is connected.
+// When perDeviceTimeout > 0, devices that are not currently connected are pinged
+// with a name request and only the ones that answer (powered on, in range) are
+// printed — so stale pairings for devices nowhere near the Mac are hidden.
+func runBTList(perDeviceTimeout: TimeInterval) {
+  guard let paired = IOBluetoothDevice.pairedDevices() else { return }
+  let audio = paired.compactMap { $0 as? IOBluetoothDevice }
+    .filter { $0.deviceClassMajor == UInt32(kBluetoothDeviceClassMajorAudio) }
+
+  var reachable: Set<String>? = nil
+  if perDeviceTimeout > 0 {
+    let probe = NameProbe()
+    probe.probe(audio.filter { !$0.isConnected() }, perDevice: perDeviceTimeout)
+    reachable = probe.reachable
+  }
+
+  for d in audio {
+    let addr = d.addressString ?? ""
+    // Connected devices are reachable by definition; otherwise require a probe hit.
+    if let reachable, !d.isConnected(), !reachable.contains(addr) {
+      continue
+    }
+    let name = d.name ?? "(unknown)"
+    let connected = d.isConnected() ? "1" : "0"
+    print("\(addr)\t\(connected)\t\(name)")
+  }
+}
+
+// runBTConnect opens a baseband connection to the device, which brings a paired
+// audio device online as a CoreAudio output. Blocks until connected or fails.
+func runBTConnect(address: String) {
+  guard let d = IOBluetoothDevice(addressString: address) else {
+    die("no Bluetooth device with address \(address)")
+  }
+  if d.isConnected() { return }
+  let res = d.openConnection()
+  if res != kIOReturnSuccess {
+    die("openConnection to \(address) failed (IOReturn \(res))")
+  }
+}
+
 func runRender(uid: String) {
   guard let dev = deviceID(forUID: uid) else { die("no output device with UID \(uid)") }
 
@@ -221,6 +310,31 @@ let args = Array(CommandLine.arguments.dropFirst())
 switch args.first {
 case "list":
   runList()
+case "bt-list":
+  var timeout: TimeInterval = 0
+  var i = 1
+  while i < args.count {
+    if args[i] == "--reachable-timeout", i + 1 < args.count {
+      timeout = TimeInterval(args[i + 1]) ?? 0
+      i += 2
+    } else {
+      i += 1
+    }
+  }
+  runBTList(perDeviceTimeout: timeout)
+case "bt-connect":
+  var address: String?
+  var i = 1
+  while i < args.count {
+    if args[i] == "--address", i + 1 < args.count {
+      address = args[i + 1]
+      i += 2
+    } else {
+      i += 1
+    }
+  }
+  guard let a = address else { die("usage: chorusaudio bt-connect --address <addr>") }
+  runBTConnect(address: a)
 case "render":
   var uid: String?
   var i = 1
@@ -235,6 +349,6 @@ case "render":
   guard let u = uid else { die("usage: chorusaudio render --device-uid <uid>") }
   runRender(uid: u)
 default:
-  FileHandle.standardError.write("usage: chorusaudio (list | render --device-uid <uid>)\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: chorusaudio (list | bt-list [--reachable-timeout <sec>] | bt-connect --address <addr> | render --device-uid <uid>)\n".data(using: .utf8)!)
   exit(2)
 }

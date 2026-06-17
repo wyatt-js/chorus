@@ -28,7 +28,8 @@ internal/output/     # Output interface, Broadcaster (fan-out + per-output delay
                      #   Cast (live WAV HTTP + go-chromecast),
                      #   AirPlay (airplayrelay sidecar), BT (chorusaudio helper)
 internal/pipeline/   # wires capture -> broadcaster -> outputs (Run)
-native/chorusaudio/ # Swift helper: `list` devices + `render` PCM to a CoreAudio device
+native/chorusaudio/ # Swift helper: `list` CoreAudio devices, `bt-list`/`bt-connect`
+                     #   paired Bluetooth (IOBluetooth), `render` PCM to a CoreAudio device
 native/airplayrelay/ # Rust sidecar (wraps airplay2-rs): `list` AirPlay 2 receivers +
                      #   `render` s16le PCM from stdin to one (HomeKit pairing persisted)
 scripts/build_deps.sh
@@ -94,8 +95,20 @@ A slow output drops chunks rather than stalling the others (see `pump`).
   airplay/pairings.json`), and streams live PCM via airplay2-rs. First-time
   pairing may need a PIN (`--pin`); AirPlay buffers ~2s, so align other outputs
   to it. Apple TVs use transient pairing; HomePods require the encryption path.
-- **Bluetooth output** = a normal CoreAudio device once paired (manual macOS
-  step). The Swift helper renders to it by UID via AUHAL + AVAudioSourceNode.
+- **Bluetooth output** = a normal CoreAudio device once *connected*. Pairing is a
+  manual macOS step, but the `chorus play` picker lists paired audio devices via
+  IOBluetooth (`chorusaudio bt-list`, with connect state) and *connecting* is what
+  brings a device online as a CoreAudio output — selecting a disconnected device
+  in the picker runs `chorusaudio bt-connect --address <addr>` (spinner shown),
+  then resolves it to its CoreAudio UID by name. The helper renders to it by UID
+  via AUHAL + AVAudioSourceNode.
+- **Bluetooth reachability**: classic BT audio devices don't advertise presence,
+  so `bt-list --reachable-timeout <sec>` pings each disconnected paired device
+  with a baseband *name request* and only prints the ones that answer (powered on,
+  in range). The controller serializes paging, so the scan budget scales with the
+  number of absent devices (≈ per-device timeout × count). It can have false
+  negatives (a slow-to-answer device gets hidden); connecting still happens at
+  select-time, so the spinner there is the backstop.
 - **Clock drift** is the core hard problem: independent clocks drift over minutes;
   a static offset is fine short-term, periodic recalibration is the real fix (P3).
 
