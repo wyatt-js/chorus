@@ -8,6 +8,8 @@ macOS can natively send to one AirPlay/Cast target at a time; `chorus` fans one
 captured stream out to several devices and delays each independently so they line
 up instead of echoing.
 
+<img width="541" height="150" alt="Screenshot 2026-06-22 at 11 02 15" src="https://github.com/user-attachments/assets/40fa8dbd-6475-474d-abe7-333078befb52" />
+
 > **Status:** early development. AirPlay 2, Cast, and Bluetooth output all work;
 > alignment is manual (`--offset`) today, mic auto-calibration is planned. See
 > [Roadmap](#roadmap).
@@ -49,6 +51,8 @@ If you cloned without `--recurse-submodules`, run `git submodule update --init
 --recursive` first.
 
 ## Usage
+
+<img width="605" height="279" alt="Screenshot 2026-06-22 at 12 54 56" src="https://github.com/user-attachments/assets/ee1accc6-9111-4b62-bc62-b91197dc7862" />
 
 ```sh
 chorus play                                       # interactive picker (multi-select)
