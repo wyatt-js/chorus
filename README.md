@@ -4,9 +4,11 @@
 
 `chorus` is a macOS CLI that captures your system audio and relays it to multiple
 **Google Cast**, **AirPlay 2**, and **Bluetooth** devices at once — time-aligned.
-macOS can natively send to one AirPlay/Cast target at a time; `chorus` fans one
-captured stream out to several devices and delays each independently so they line
-up instead of echoing.
+macOS can natively stream to multiple AirPlay 2 speakers at once, but only within
+that one ecosystem — it can't drive Google Cast at all, talks to just one
+Bluetooth device, and gives you no way to mix AirPlay + Cast + Bluetooth or to
+delay each independently. `chorus` fans one captured stream out across all three
+and aligns them with per-device offsets so they line up instead of echoing.
 
 <img width="541" height="150" alt="Screenshot 2026-06-22 at 11 02 15" src="https://github.com/user-attachments/assets/40fa8dbd-6475-474d-abe7-333078befb52" />
 
