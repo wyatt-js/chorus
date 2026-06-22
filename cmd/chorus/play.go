@@ -173,6 +173,11 @@ func playInteractive(parent context.Context, wait time.Duration, volume int, pin
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	// Keep the TUI clean: send Go logs and sidecar stderr to a log file.
+	if _, closeLogs := quietLogs(); closeLogs != nil {
+		defer closeLogs()
+	}
+
 	// First pick, with the animated banner running until discovery finishes.
 	done := make(chan struct{})
 	var groups []menuGroup

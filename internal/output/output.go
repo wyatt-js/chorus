@@ -6,11 +6,17 @@ import (
 	"context"
 	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/wyattjs/chorus/internal/audio"
 )
+
+// LogWriter is where render-sidecar stderr (airplayrelay, chorusaudio) is sent.
+// Defaults to the terminal; the interactive player redirects it to a log file so
+// sidecar chatter doesn't clutter the TUI.
+var LogWriter io.Writer = os.Stderr
 
 // ChunkFrames is the PCM granule the broadcaster reads and forwards (10ms at
 // 44.1kHz). It also sets the granularity of per-output offsets.

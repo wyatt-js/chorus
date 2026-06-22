@@ -1,0 +1,121 @@
+[package]
+name = "airplay2"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Your Name <email@example.com>"]
+description = "Pure Rust library for streaming audio to AirPlay 2 devices"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/org/airplay2-rs"
+keywords = ["airplay", "audio", "streaming", "homekit", "multiroom"]
+categories = ["multimedia::audio", "network-programming"]
+readme = "README.md"
+
+[features]
+default = ["tokio-runtime", "raop"]
+tokio-runtime = ["tokio", "tokio-util"]
+raop = ["rsa", "sha1"]
+receiver = []
+audio-coreaudio = ["dep:coreaudio-rs"]
+audio-cpal = ["dep:cpal"]
+audio-alsa = ["dep:alsa"]
+receiver-full = ["receiver", "audio-coreaudio", "audio-cpal"]
+decoders = ["dep:symphonia"]
+
+[dependencies]
+cpal = { version = "0.15.3", optional = true, default-features = false }
+bytes = "1.11.1"
+
+# Async
+tokio = { version = "1.43", features = ["net", "sync", "time", "rt", "macros", "fs"], optional = true }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+async-trait = "0.1"
+futures = "0.3"
+socket2 = { version = "0.5", features = ["all"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+
+# Discovery
+mdns-sd = "0.17"
+hostname = "0.4"
+
+# Crypto
+rsa = { version = "0.10.0-rc.15", optional = true }
+sha1 = { version = "0.11.0-rc.5", features = ["oid"], optional = true }
+base64 = "0.22"
+srp = "0.7.0-rc.1"
+num-bigint = { version = "0.4", features = ["rand"] }
+num-traits = "0.2"
+byteorder = "1.5"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+chacha20poly1305 = "0.11.0-rc.3"
+aes-gcm = "0.11.0-rc.3"
+aes = "0.8"
+ctr = "0.9"
+hkdf = "0.13.0-rc.5"
+sha2 = "0.11.0-rc.5"
+rand = "0.8"
+rand_core_10 = { package = "rand_core", version = "0.10.0" }
+crypto-bigint = "0.7.0-rc.25"
+curve25519-dalek = "4.1"
+zeroize = "1.8"
+
+# Serialization
+# bytes = "1.9" # Already defined above
+
+# Audio processing
+alac-encoder = "0.3"      # ALAC encoding
+
+# Persistent storage (optional)
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+fdk-aac = "0.8.0"
+symphonia = { version = "0.5.5", optional = true, features = ["mp3", "aac", "alac", "pcm", "isomp4"] }
+hex = "0.4.3"
+portpicker = "0.1.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tokio-test = "0.4"
+proptest = "1.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+tempfile = "3.10.1"
+# Integration test dependencies
+chrono = "0.4"
+nix = { version = "0.29", features = ["signal"] }
+portpicker = "0.1.1"
+hex = "0.4.3"
+
+[[bench]]
+name = "protocol_benchmarks"
+harness = false
+
+[[bench]]
+name = "raop_benchmarks"
+harness = false
+
+[[bench]]
+name = "receiver_benchmarks"
+harness = false
+
+[[bench]]
+name = "convert_benchmarks"
+harness = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = { version = "0.14", optional = true }
+[workspace]
+members = ["integration_tests"]
+
+[[bench]]
+name = "streaming_benchmarks"
+harness = false

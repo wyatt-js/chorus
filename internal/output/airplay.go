@@ -36,8 +36,12 @@ func NewAirPlay(dev AirPlayDevice, pin string) *AirPlay { return &AirPlay{dev: d
 
 func (a *AirPlay) Name() string { return a.dev.Name }
 
-// Prestart spawns the render sidecar and returns its PID so the capture tap can
-// exclude it (avoiding a feedback loop). Run reuses this process.
+// Prestart spawns the render sidecar early (scanning + HomeKit pairing take a
+// few seconds) so Run can reuse it. It returns PID 0 — i.e. "nothing to
+// exclude": airplayrelay streams PCM to the receiver over the network and never
+// opens a local CoreAudio device, so it can't feed back into the tap. Excluding
+// it is also harmful — audiotee fails ("Failed to translate process IDs to
+// audio objects") on a PID that owns no audio object, killing the whole capture.
 func (a *AirPlay) Prestart(ctx context.Context) (int, error) {
 	bin, err := airplayHelperPath()
 	if err != nil {
@@ -49,7 +53,7 @@ func (a *AirPlay) Prestart(ctx context.Context) (int, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = 3 * time.Second // force-kill if it lingers after ctx cancel
-	cmd.Stderr = os.Stderr          // surface pairing prompts / progress
+	cmd.Stderr = LogWriter          // sidecar progress/pairing -> log sink (terminal by default)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return 0, err
@@ -58,7 +62,7 @@ func (a *AirPlay) Prestart(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("airplay %s: starting sidecar: %w", a.dev.Name, err)
 	}
 	a.cmd, a.stdin = cmd, stdin
-	return cmd.Process.Pid, nil
+	return 0, nil // network sink: no local audio object, nothing to exclude
 }
 
 func (a *AirPlay) Run(ctx context.Context, in <-chan []byte) error {

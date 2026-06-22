@@ -60,7 +60,6 @@ dependencies = [
 [[package]]
 name = "airplay2"
 version = "0.1.0"
-source = "git+https://github.com/jburnhams/airplay2-rs?rev=527884f916d5860e39ab54b5cd272ba700f270bc#527884f916d5860e39ab54b5cd272ba700f270bc"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",

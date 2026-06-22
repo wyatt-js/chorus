@@ -33,7 +33,8 @@ native/chorusaudio/ # Swift helper: `list` CoreAudio devices, `bt-list`/`bt-conn
 native/airplayrelay/ # Rust sidecar (wraps airplay2-rs): `list` AirPlay 2 receivers +
                      #   `render` s16le PCM from stdin to one (HomeKit pairing persisted)
 scripts/build_deps.sh
-third_party/         # audiotee submodule (nested go.mod)
+third_party/         # audiotee submodule (nested go.mod);
+                     #   airplay2-rs (vendored at rev 527884f, locally patched)
 ```
 
 Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring only.
@@ -51,7 +52,11 @@ gofmt -l cmd internal          # must report no files (formatting gate)
 - The build is pure Go (CGO_ENABLED=0); `go build/vet ./...` needs no cgo.
 - **AirPlay 2** needs a Rust toolchain (`cargo`, from https://rustup.rs):
   `make deps` builds the `airplayrelay` sidecar via `cargo build --release`. The
-  airplay2-rs crate is pinned to a rev in `native/airplayrelay/Cargo.toml`.
+  airplay2-rs crate is **vendored** under `third_party/airplay2-rs` (upstream rev
+  527884f) and consumed via a `path` dep in `native/airplayrelay/Cargo.toml`,
+  because it carries a local patch: `connect_internal` defers RTSP `OPTIONS`
+  until after authentication so strict receivers (Samsung TVs, HomePods) that
+  `403` a cleartext `OPTIONS` accept it over the encrypted channel.
 - `third_party/` has a nested `go.mod` so the parent's `./...` ignores the
   vendored submodule(s).
 
@@ -122,9 +127,18 @@ When touching the fan-out/offset path, preserve the ability to measure this.
 - Verify a path exists before referencing it; the architecture pivoted from
   classic-AirPlay/RAOP (libraop cgo, now removed) to Cast + AirPlay 2 + Bluetooth,
   so older notes may be stale.
+- **AirPlay 2 status:** on a Samsung Neo QLED the full patched handshake now
+  completes end-to-end against real hardware: `GET /info` → transient SRP pairing
+  (no PIN) → encrypted `OPTIONS` → `SETUP` #1/#2 → `SETPEERS` → PTP sync →
+  `SETRATEANCHORTIME` → `RECORD` → live RTP audio (stable, no teardown). The local
+  airplay2-rs patches that made this work (see `third_party/airplay2-rs`): OPTIONS
+  after auth; buffered SETUP #2 carries the full `streams` field set
+  (`streamConnectionID`/`supportsDynamicStreamID`/`isMedia`/`sr`/`audioMode`) and
+  drops the RAOP `Transport` header; ALAC codec; and SETRATEANCHORTIME's
+  `networkTimeTimelineID` falls back to the PTP grandmaster id (captured from the
+  master's Announce) since Samsung omits `timingPeerInfo.ClockID`. Still to confirm
+  by ear: actual audible output + sync quality (PTP offset logging looks off).
+  HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
 - **Unverified on hardware:** the live WAV-over-HTTP Cast path (ffmpeg→FLAC is the
-  fallback) and the AirPlay 2 *streaming/pairing* path. Discovery (`airplayrelay
-  list`) is confirmed working; actually playing to a receiver — especially PIN
-  pairing and HomePod's required encryption — still needs a real-hardware pass.
-  airplay2-rs is early-stage (v0.1).
+  fallback).
 - Ask before committing or pushing.
