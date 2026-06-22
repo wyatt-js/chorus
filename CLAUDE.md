@@ -143,6 +143,9 @@ When touching the fan-out/offset path, preserve the ability to measure this.
   silence into a partial packet, an audible pop recurring every few seconds as the
   clocks drift. Still to confirm by ear: sync quality (PTP offset logging looks
   off). HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
+  master's Announce) since Samsung omits `timingPeerInfo.ClockID`. Still to confirm
+  by ear: actual audible output + sync quality (PTP offset logging looks off).
+  HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
 - **Unverified on hardware:** the live WAV-over-HTTP Cast path (ffmpeg→FLAC is the
   fallback).
 - Ask before committing or pushing.
