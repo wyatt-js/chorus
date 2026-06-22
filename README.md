@@ -107,11 +107,13 @@ stereo PCM throughout.
 
 ## Caveats
 
-- **AirPlay 2 targets modern receivers** (HomePod, Apple TV, recent speakers/TVs)
-  via airplay2-rs — the old classic-RAOP path is gone. The full handshake + live
-  audio is confirmed end-to-end on Samsung TVs; HomePod's PIN/encryption path is
-  still untested. airplay2-rs is early-stage (v0.1), pinned to a rev in
-  `native/airplayrelay/Cargo.toml`.
+- **AirPlay 2 needs a patched dependency.** Sending goes through airplay2-rs
+  (early-stage, v0.1), which doesn't work out of the box against strict modern
+  receivers — so it's **vendored under `third_party/airplay2-rs` and locally
+  patched** (OPTIONS deferred until after auth, a fuller SETUP `streams` field
+  set, ALAC, PTP grandmaster-id fallback, no-zero-pad PCM). With those patches the
+  full handshake + live audio is confirmed end-to-end on Samsung TVs; HomePod's
+  PIN/encryption path is still untested.
 - **Audio sync is still being hardened.** Outputs run on independent clocks, and
   periodic pops under clock drift are a known open issue.
 - **Cast buffers several seconds** — align other outputs *to* it. The live
