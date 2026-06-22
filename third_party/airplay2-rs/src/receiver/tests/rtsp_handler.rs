@@ -1,0 +1,292 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use crate::protocol::rtsp::{Headers, Method, RtspRequest, StatusCode};
+use crate::receiver::rtsp_handler::*;
+use crate::receiver::session::{ReceiverSession, SessionState};
+use crate::receiver::set_parameter_handler::ParameterUpdate;
+
+fn test_addr() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345)
+}
+
+fn create_request(method: Method) -> RtspRequest {
+    RtspRequest {
+        method,
+        uri: "rtsp://localhost/stream".to_string(),
+        headers: Headers::new(),
+        body: Vec::new(),
+    }
+}
+
+const SIMPLE_SDP: &str = r"v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=AirTunes
+t=0 0
+m=audio 0 RTP/AVP 96
+a=rtpmap:96 AppleLossless
+a=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100
+";
+
+#[test]
+fn test_options() {
+    let session = ReceiverSession::new(test_addr());
+    let mut request = create_request(Method::Options);
+    request.headers.insert("CSeq".to_string(), "1".to_string());
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.response.headers.contains("Public"));
+    assert_eq!(result.response.headers.cseq(), Some(1));
+}
+
+#[test]
+fn test_announce_valid_state() {
+    let session = ReceiverSession::new(test_addr());
+    // Default state is Connected, which is valid for ANNOUNCE
+    let mut request = create_request(Method::Announce);
+    request.headers.insert("CSeq".to_string(), "2".to_string());
+    request
+        .headers
+        .insert("Content-Type".to_string(), "application/sdp".to_string());
+    request.body = SIMPLE_SDP.as_bytes().to_vec();
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert_eq!(result.new_state, Some(SessionState::Announced));
+    assert!(result.stream_params.is_some());
+}
+
+#[test]
+fn test_announce_invalid_state() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Move to streaming state via valid transitions
+    session.set_state(SessionState::Announced).unwrap();
+    session.set_state(SessionState::Setup).unwrap();
+    session.set_state(SessionState::Streaming).unwrap();
+
+    let mut request = create_request(Method::Announce);
+    request.body = SIMPLE_SDP.as_bytes().to_vec();
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::METHOD_NOT_VALID);
+}
+
+#[test]
+fn test_setup_valid() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Connected -> Announced
+    session.set_state(SessionState::Announced).unwrap();
+
+    let mut request = create_request(Method::Setup);
+    request.headers.insert(
+        "Transport".to_string(),
+        "RTP/AVP/UDP;unicast;mode=record;control_port=6001;timing_port=6002".to_string(),
+    );
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.response.headers.contains("Transport"));
+    assert!(result.response.headers.contains("Session"));
+    assert_eq!(result.new_state, Some(SessionState::Setup));
+    assert!(result.allocated_ports.is_some());
+}
+
+#[test]
+fn test_setup_invalid_transport() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Connected -> Announced
+    session.set_state(SessionState::Announced).unwrap();
+
+    let mut request = create_request(Method::Setup);
+    request
+        .headers
+        .insert("Transport".to_string(), "InvalidTransport".to_string());
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn test_record_valid() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Connected -> Announced -> Setup
+    session.set_state(SessionState::Announced).unwrap();
+    session.set_state(SessionState::Setup).unwrap();
+
+    let mut request = create_request(Method::Record);
+    request
+        .headers
+        .insert("RTP-Info".to_string(), "seq=1;rtptime=12345".to_string());
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.response.headers.contains("Audio-Latency"));
+    assert_eq!(result.new_state, Some(SessionState::Streaming));
+    assert!(result.start_streaming);
+}
+
+#[test]
+fn test_record_invalid_state() {
+    let session = ReceiverSession::new(test_addr());
+    // Connected state is invalid for RECORD
+    let request = create_request(Method::Record);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::METHOD_NOT_VALID);
+}
+
+#[test]
+fn test_pause() {
+    let session = ReceiverSession::new(test_addr());
+    // Connected state is invalid for PAUSE
+    let request = create_request(Method::Pause);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::METHOD_NOT_VALID);
+}
+
+#[test]
+fn test_pause_valid() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Move to Streaming state
+    session.set_state(SessionState::Announced).unwrap();
+    session.set_state(SessionState::Setup).unwrap();
+    session.set_state(SessionState::Streaming).unwrap();
+
+    let request = create_request(Method::Pause);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert_eq!(result.new_state, Some(SessionState::Paused));
+}
+
+#[test]
+fn test_flush() {
+    let session = ReceiverSession::new(test_addr());
+    // Connected state is invalid for FLUSH
+    let request = create_request(Method::Flush);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::METHOD_NOT_VALID);
+}
+
+#[test]
+fn test_flush_valid_streaming() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Move to Streaming state
+    session.set_state(SessionState::Announced).unwrap();
+    session.set_state(SessionState::Setup).unwrap();
+    session.set_state(SessionState::Streaming).unwrap();
+
+    let request = create_request(Method::Flush);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.new_state.is_none());
+}
+
+#[test]
+fn test_flush_valid_paused() {
+    let mut session = ReceiverSession::new(test_addr());
+    // Move to Paused state
+    session.set_state(SessionState::Announced).unwrap();
+    session.set_state(SessionState::Setup).unwrap();
+    session.set_state(SessionState::Streaming).unwrap();
+    session.set_state(SessionState::Paused).unwrap();
+
+    let request = create_request(Method::Flush);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.new_state.is_none());
+}
+
+#[test]
+fn test_teardown() {
+    let session = ReceiverSession::new(test_addr());
+    let request = create_request(Method::Teardown);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert_eq!(result.new_state, Some(SessionState::Teardown));
+    assert!(result.stop_streaming);
+}
+
+#[test]
+fn test_get_parameter_empty() {
+    let session = ReceiverSession::new(test_addr());
+    let request = create_request(Method::GetParameter);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert!(result.response.body.is_empty());
+}
+
+#[test]
+fn test_get_parameter_volume() {
+    let mut session = ReceiverSession::new(test_addr());
+    session.set_volume(-15.0);
+
+    let mut request = create_request(Method::GetParameter);
+    request.body = b"volume".to_vec();
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    let body = String::from_utf8(result.response.body).unwrap();
+    assert!(body.contains("volume: -15.000000"));
+}
+
+#[test]
+fn test_unknown_method() {
+    let session = ReceiverSession::new(test_addr());
+    // Using OPTIONS as a placeholder, but treating it as unknown if we force it?
+    // Actually `handle_request` matches Method enum.
+    // We can use a method that is not implemented, e.g. PLAY
+    let request = create_request(Method::Play);
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[test]
+fn test_set_parameter_integration() {
+    let session = ReceiverSession::new(test_addr());
+    let mut request = create_request(Method::SetParameter);
+    request
+        .headers
+        .insert("Content-Type".to_string(), "text/parameters".to_string());
+    request.body = b"volume: -20.0\r\n".to_vec();
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::OK);
+    assert_eq!(result.parameter_updates.len(), 1);
+
+    if let ParameterUpdate::Volume(vol) = &result.parameter_updates[0] {
+        assert!((vol.db - -20.0).abs() < 0.01);
+    } else {
+        panic!("Expected volume update");
+    }
+}
+
+#[test]
+fn test_announce_invalid_sdp() {
+    let session = ReceiverSession::new(test_addr());
+    let mut request = create_request(Method::Announce);
+    request.headers.insert("CSeq".to_string(), "3".to_string());
+    request
+        .headers
+        .insert("Content-Type".to_string(), "application/sdp".to_string());
+    // Invalid SDP body
+    request.body = b"Not valid SDP".to_vec();
+
+    let result = handle_request(&request, &session, None);
+
+    assert_eq!(result.response.status, StatusCode::BAD_REQUEST);
+}

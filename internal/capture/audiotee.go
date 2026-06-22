@@ -15,6 +15,11 @@ import (
 	"github.com/wyattjs/chorus/internal/audio"
 )
 
+// LogWriter is where audiotee's stderr (JSON logs + the macOS capture-permission
+// prompt) is sent. Defaults to the terminal; the interactive player redirects it
+// to a log file so the JSON chatter doesn't clutter the TUI.
+var LogWriter io.Writer = os.Stderr
+
 // Capture is a running audiotee process. Read PCM from PCM; the bytes are
 // interleaved little-endian samples in Format.
 type Capture struct {
@@ -44,7 +49,7 @@ func Start(ctx context.Context, excludePIDs []int) (*Capture, error) {
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = 3 * time.Second // force-kill if it lingers after ctx cancel
-	cmd.Stderr = os.Stderr          // surface logs + the macOS capture-permission prompt
+	cmd.Stderr = LogWriter          // logs + macOS capture-permission prompt -> log sink (terminal by default)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

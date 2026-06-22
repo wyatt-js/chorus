@@ -52,7 +52,7 @@ func (b *BT) Prestart(ctx context.Context) (int, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, "render", "--device-uid", b.dev.UID)
 	cmd.WaitDelay = 3 * time.Second // force-kill if it lingers after ctx cancel
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = LogWriter
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return 0, err

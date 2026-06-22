@@ -12,8 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 # Pure-Rust AirPlay 2 stack (discovery, HomeKit pairing, live PCM streaming).
-# Pinned to a known-good revision — this crate is early-stage (v0.1).
-airplay2 = { git = "https://github.com/jburnhams/airplay2-rs", rev = "527884f916d5860e39ab54b5cd272ba700f270bc" }
+# Vendored at upstream rev 527884f (early-stage v0.1) under third_party/airplay2-rs
+# with a LOCAL PATCH: connect_internal sends RTSP OPTIONS *after* authentication so
+# strict receivers (Samsung TVs, HomePods) that 403 a cleartext OPTIONS accept it
+# over the encrypted channel. See third_party/airplay2-rs/src/connection/manager.rs.
+airplay2 = { path = "../../third_party/airplay2-rs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

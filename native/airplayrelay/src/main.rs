@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use airplay2::audio::AudioFormat;
+use airplay2::audio::{AudioCodec, AudioFormat};
 use airplay2::protocol::pairing::storage::FileStorage;
 use airplay2::streaming::AudioSource;
 use airplay2::{AirPlayClient, AirPlayConfig, AirPlayDevice, scan};
@@ -138,6 +138,9 @@ async fn run_render(args: impl Iterator<Item = String>) -> Result<(), Box<dyn st
     );
 
     let mut config = AirPlayConfig::default();
+    // ALAC (Apple Lossless) is the universal AirPlay 2 codec; the crate defaults to
+    // raw PCM, which strict receivers reject. The streamer encodes stdin PCM -> ALAC.
+    config.audio_codec = AudioCodec::Alac;
     config.pin = flags.pin.clone();
     let store_path = pairings_path(flags.store.as_deref());
     config.pairing_storage_path = Some(store_path.clone());
