@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -48,11 +49,13 @@ const (
 	clearToBottom = "\033[J"
 )
 
-// btProbeTimeout is the per-device baseband name-request page timeout used to
-// decide whether a disconnected paired device is in range. Reachable devices
-// answer well within this; absent ones consume it (and serialize), so the scan
-// can take roughly this long times the number of absent devices.
-const btProbeTimeout = 3 * time.Second
+// btProbeTimeout = 0 disables the baseband name-request reachability probe in the
+// picker: it serializes per device (off/out-of-range ones each consume the full
+// timeout, so the menu stalled for tens of seconds) and false-negatives can hide
+// devices that are actually fine — including disconnected ones the user wants to
+// pick precisely to connect them. List all paired audio devices instead and let
+// connect-at-select (with its spinner) be the backstop for ones that are offline.
+const btProbeTimeout = 0
 
 // animateBanner draws the chorus wordmark in a gold→brown gradient, with a purple
 // sound wave that radiates outward to its right. The wave keeps pulsing for as
@@ -237,7 +240,7 @@ func discoverAll(ctx context.Context, wait time.Duration) []menuGroup {
 	btGroup := menuGroup{title: "Bluetooth", color: ansiGreen}
 	for i := range bts {
 		d := bts[i]
-		status := ansiDim + "○ in range" + ansiReset
+		status := ansiDim + "○ paired" + ansiReset
 		if d.Connected {
 			status = ansiGreen + "● connected" + ansiReset
 		}
@@ -293,7 +296,10 @@ func selectDevices(groups []menuGroup, preselect map[string]bool) (chosen []*men
 			fmt.Printf("\033[%dA", prevLines) // move cursor up to top of menu
 		}
 		fmt.Print("\r" + clearToBottom)
-		prevLines = renderMenu(groups, flat, cursor)
+		// Re-measure the width each frame so a resize between renders doesn't
+		// desync the cursor-up count from the wrapped row count.
+		width, _, _ := term.GetSize(fd)
+		prevLines = renderMenu(groups, flat, cursor, width)
 	}
 	render()
 
@@ -421,11 +427,50 @@ func connectBluetooth(ctx context.Context, btd output.BluetoothDevice) (output.D
 	return output.Device{}, fmt.Errorf("%s connected but did not appear as a CoreAudio output", btd.Name)
 }
 
-// renderMenu prints the grouped device list and returns the number of lines drawn.
-func renderMenu(groups []menuGroup, flat []*menuItem, cursor int) int {
+// displayWidth returns the number of visible columns a string occupies, ignoring
+// ANSI CSI escape sequences (e.g. color codes), which take no screen width.
+func displayWidth(s string) int {
+	w := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' { // CSI: ESC [ ... <final>
+			i += 2
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
+				i++
+			}
+			if i < len(s) {
+				i++ // consume the final byte (e.g. 'm')
+			}
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		w++
+	}
+	return w
+}
+
+// physRows reports how many physical terminal rows a single logical line occupies
+// once the terminal wraps it at width columns. width <= 0 means unknown (assume no
+// wrap). Mirrors the terminal's deferred-wrap behaviour so an exact-width line is
+// one row, not two.
+func physRows(line string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	w := displayWidth(line)
+	if w == 0 {
+		return 1
+	}
+	return (w-1)/width + 1
+}
+
+// renderMenu prints the grouped device list and returns the number of physical
+// terminal rows drawn (counting line-wrap), so the caller can move the cursor
+// back to the top of the menu exactly on the next redraw.
+func renderMenu(groups []menuGroup, flat []*menuItem, cursor, width int) int {
 	var b strings.Builder
-	lines := 0
-	writeln := func(s string) { b.WriteString(s + "\r\n"); lines++ }
+	rows := 0
+	writeln := func(s string) { b.WriteString(s + "\r\n"); rows += physRows(s, width) }
 
 	writeln(ansiBold + "Select output devices" + ansiReset +
 		ansiDim + "  (↑/↓ move · enter toggle · Submit to confirm · q cancel)" + ansiReset)
@@ -473,5 +518,5 @@ func renderMenu(groups []menuGroup, flat []*menuItem, cursor int) int {
 	}
 
 	fmt.Print(b.String())
-	return lines
+	return rows
 }

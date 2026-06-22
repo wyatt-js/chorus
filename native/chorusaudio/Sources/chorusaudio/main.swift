@@ -301,12 +301,31 @@ func runRender(uid: String) {
   }
 
   if AudioUnitInitialize(unit) != noErr { die("AudioUnitInitialize failed") }
-  if AudioOutputUnitStart(unit) != noErr { die("AudioOutputUnitStart failed") }
 
-  // Pump stdin -> ring until EOF, then stop.
   let chunk = 8192
   var tmp = [UInt8](repeating: 0, count: chunk)
-  while true {
+  var eof = false
+
+  // Pre-buffer before starting playback. The render callback pulls at the device
+  // clock from the moment the unit starts; if the ring is empty (or hovering near
+  // empty, as it does when the upstream feed arrives in bursts) it underruns to
+  // silence — an audible click every time a burst lands late. Prime a cushion
+  // first so the callback always has a backlog to draw on. The unit isn't running
+  // yet, so nothing drains the ring during priming and we can count bytes directly.
+  // Mirrors the AirPlay path, which fills its buffer before it begins streaming.
+  let primeTarget = 44100 * 2  // ~0.5s of the ~1s ring
+  var primed = 0
+  while primed < primeTarget {
+    let n = tmp.withUnsafeMutableBytes { read(0, $0.baseAddress, chunk) }
+    if n <= 0 { eof = true; break }
+    tmp.withUnsafeBufferPointer { ring.write($0.baseAddress!, n) }
+    primed += n
+  }
+
+  if AudioOutputUnitStart(unit) != noErr { die("AudioOutputUnitStart failed") }
+
+  // Pump the rest of stdin -> ring until EOF, then stop.
+  while !eof {
     let n = tmp.withUnsafeMutableBytes { read(0, $0.baseAddress, chunk) }
     if n <= 0 { break }
     tmp.withUnsafeBufferPointer { ring.write($0.baseAddress!, n) }
