@@ -22,6 +22,15 @@ var LogWriter io.Writer = os.Stderr
 // 44.1kHz). It also sets the granularity of per-output offsets.
 const ChunkFrames = 441
 
+// jitterChunks is the per-sink channel headroom beyond any priming silence — the
+// fan-out's tolerance for an output that briefly can't keep up before it has to
+// drop a chunk (an audible click). Network sinks like AirPlay pull at real-time
+// and apply backpressure, so transient stalls (jitter, a GC pause, clock drift)
+// back the buffer up; a few seconds of slack absorbs those without dropping. It's
+// only capacity — empty at steady state — so it adds no baseline latency, just a
+// bounded worst-case delay before a drop. 600 chunks ≈ 6s at 10ms/chunk.
+const jitterChunks = 600
+
 // Output is a single audio sink. Run consumes PCM chunks (s16le/44100/stereo)
 // from in until in is closed or ctx is cancelled, then tears down.
 type Output interface {
@@ -64,6 +73,12 @@ type sink struct {
 	ch     chan []byte
 	offset time.Duration
 	cancel context.CancelFunc
+
+	// Drop diagnostics: a full channel means this sink can't keep up, so fanOut
+	// drops the chunk — an audible click. drops is the running total; lastDropLog
+	// rate-limits the warning so a sustained stall doesn't flood the log.
+	drops       int
+	lastDropLog time.Time
 }
 
 // Broadcaster reads PCM from a single source (via Feed) and tees it to every
@@ -143,9 +158,9 @@ func (b *Broadcaster) RemoveSink(name string) {
 func (b *Broadcaster) launchLocked(s *sink) {
 	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
 	n := silenceChunks(s.offset)
-	// Size the buffer to fit the priming silence plus ~2s headroom so priming
-	// never blocks before the output starts draining.
-	s.ch = make(chan []byte, n+200)
+	// Size the buffer to fit the priming silence plus jitter headroom so priming
+	// never blocks and transient stalls don't force a (clicky) chunk drop.
+	s.ch = make(chan []byte, n+jitterChunks)
 	for range n {
 		s.ch <- make([]byte, chunkBytes)
 	}
@@ -193,10 +208,17 @@ func (b *Broadcaster) fanOut(ctx context.Context) {
 			return
 		case buf := <-b.pcmCh:
 			b.mu.Lock()
-			for _, s := range b.sinks {
+			for i := range b.sinks {
+				s := &b.sinks[i]
 				select {
 				case s.ch <- buf:
 				default: // sink is behind; drop rather than stall everyone
+					s.drops++
+					if now := time.Now(); now.Sub(s.lastDropLog) >= time.Second {
+						log.Printf("output %s: dropped chunk (buffer full); %d total — likely an audible click",
+							s.out.Name(), s.drops)
+						s.lastDropLog = now
+					}
 				}
 			}
 			b.mu.Unlock()

@@ -323,7 +323,7 @@ impl PcmStreamer {
             tokio::select! {
                 // Audio packet processing
                 _ = audio_interval.tick() => {
-                    // Read from buffer
+                    // Read whatever is buffered first.
                     let mut bytes_read = self.buffer.read(&mut packet_data);
                     tracing::trace!(
                         "Read {} bytes from buffer, available={}",
@@ -331,8 +331,16 @@ impl PcmStreamer {
                         self.buffer.available()
                     );
 
-                    if bytes_read == 0 {
-                        // Try to fill buffer
+                    // Complete the packet from the source instead of zero-padding a
+                    // short one. Packets are paced by a local interval, but audio
+                    // arrives on a different clock (a live capture / network source),
+                    // so the ring buffer periodically comes up short for one packet.
+                    // Splicing silence into a partial packet is an audible click that
+                    // recurs every few seconds as the two clocks drift (chorus saw
+                    // exactly this on AirPlay). Pulling the rest from the source lets
+                    // the source pace us through the underrun. Only a genuine source
+                    // EOF ends the stream, padding the final stub once.
+                    while bytes_read < bytes_per_packet {
                         let n = source
                             .read(&mut refill_buffer)
                             .map_err(|e| AirPlayError::IoError {
@@ -341,21 +349,26 @@ impl PcmStreamer {
                             })?;
 
                         if n == 0 {
-                            // EOF
-                            tracing::debug!("Source EOF after {} packets sent", packets_sent);
-                            *self.state.write().await = StreamerState::Finished;
-                            return Ok(());
+                            // EOF: flush any partial packet once, then finish.
+                            if bytes_read == 0 {
+                                tracing::debug!("Source EOF after {} packets sent", packets_sent);
+                                *self.state.write().await = StreamerState::Finished;
+                                return Ok(());
+                            }
+                            packet_data[bytes_read..].fill(0);
+                            break;
                         }
 
-                        self.buffer.write(&refill_buffer[..n]);
-
-                        // Try to read again from the refilled buffer
-                        bytes_read = self.buffer.read(&mut packet_data);
-                    }
-
-                    // Pad if needed
-                    if bytes_read < bytes_per_packet {
-                        packet_data[bytes_read..].fill(0);
+                        // Take just enough to finish this packet; stash any remainder
+                        // in the ring buffer for the next tick (preserving order:
+                        // buffered samples, then freshly read ones).
+                        let take = (bytes_per_packet - bytes_read).min(n);
+                        packet_data[bytes_read..bytes_read + take]
+                            .copy_from_slice(&refill_buffer[..take]);
+                        bytes_read += take;
+                        if take < n {
+                            self.buffer.write(&refill_buffer[take..n]);
+                        }
                     }
 
                     // Encode payload

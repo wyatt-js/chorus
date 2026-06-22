@@ -136,6 +136,13 @@ When touching the fan-out/offset path, preserve the ability to measure this.
   (`streamConnectionID`/`supportsDynamicStreamID`/`isMedia`/`sr`/`audioMode`) and
   drops the RAOP `Transport` header; ALAC codec; and SETRATEANCHORTIME's
   `networkTimeTimelineID` falls back to the PTP grandmaster id (captured from the
+  master's Announce) since Samsung omits `timingPeerInfo.ClockID`; and the PCM
+  streamer (`streaming/pcm.rs`) completes a short packet by reading more from the
+  source instead of zero-padding it — the send cadence is a local interval but
+  audio arrives on a different clock, so a drained ring buffer used to splice
+  silence into a partial packet, an audible pop recurring every few seconds as the
+  clocks drift. Still to confirm by ear: sync quality (PTP offset logging looks
+  off). HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
   master's Announce) since Samsung omits `timingPeerInfo.ClockID`. Still to confirm
   by ear: actual audible output + sync quality (PTP offset logging looks off).
   HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
