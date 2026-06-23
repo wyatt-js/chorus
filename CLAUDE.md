@@ -23,7 +23,7 @@ cgo path (libraop) has been removed — AirPlay 2 supersedes it.
 cmd/chorus/     # cobra CLI: main, play (interactive device picker in menu.go)
 internal/discover/   # mDNS browse: Browse (_raop._tcp), BrowseCast (_googlecast._tcp)
 internal/capture/    # audiotee sidecar wrapper -> raw PCM stream
-internal/audio/      # shared PCM Format type (StereoCD = 44100/16/2)
+internal/audio/      # shared PCM Format type (StereoCD = 48000/16/2)
 internal/output/     # Output interface, Broadcaster (fan-out + per-output delay),
                      #   Cast (live WAV HTTP + go-chromecast),
                      #   AirPlay (airplayrelay sidecar), BT (chorusaudio helper)
@@ -33,8 +33,8 @@ native/chorusaudio/ # Swift helper: `list` CoreAudio devices, `bt-list`/`bt-conn
 native/airplayrelay/ # Rust sidecar (wraps airplay2-rs): `list` AirPlay 2 receivers +
                      #   `render` s16le PCM from stdin to one (HomeKit pairing persisted)
 scripts/build_deps.sh
-third_party/         # audiotee submodule (nested go.mod);
-                     #   airplay2-rs (vendored at rev 527884f, locally patched)
+third_party/         # vendored, locally patched (nested go.mod keeps them out of
+                     #   the parent module): audiotee; airplay2-rs (rev 527884f)
 ```
 
 Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring only.
@@ -58,12 +58,13 @@ gofmt -l cmd internal          # must report no files (formatting gate)
   until after authentication so strict receivers (Samsung TVs, HomePods) that
   `403` a cleartext `OPTIONS` accept it over the encrypted channel.
 - `third_party/` has a nested `go.mod` so the parent's `./...` ignores the
-  vendored submodule(s).
+  vendored deps (audiotee, airplay2-rs — both vendored as plain files, not git
+  submodules, so their local patches live in this repo).
 
 ## Data flow
 
 ```
-audiotee (PCM s16le/44100/stereo) -> capture.Reader
+audiotee (PCM s16le/48000/stereo) -> capture.Reader
    -> output.Broadcaster (tees chunks to each Output; per-output start delay = prepended silence)
        -> output.Cast:    live WAV stream over HTTP, go-chromecast Load(url, "audio/wav", detach)
        -> output.AirPlay: pipe PCM to `airplayrelay render --device <id>` (airplay2-rs stream_audio)

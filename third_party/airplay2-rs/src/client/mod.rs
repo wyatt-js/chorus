@@ -692,9 +692,11 @@ impl AirPlayClient {
                 sample_format: crate::audio::SampleFormat::I24,
             }
         } else {
-            // AirPlay 2 typically uses 44.1kHz, 16-bit, Stereo.
+            // chorus drives 48kHz/16/Stereo end-to-end (macOS native rate) so the
+            // stdin source already matches — no ResamplingSource is created, and
+            // the SETUP advertises 48k (sr + ALAC_48000_16_2) to match.
             crate::audio::AudioFormat {
-                sample_rate: crate::audio::SampleRate::Hz44100,
+                sample_rate: crate::audio::SampleRate::Hz48000,
                 channels: crate::audio::ChannelConfig::Stereo,
                 sample_format: crate::audio::SampleFormat::I16,
             }

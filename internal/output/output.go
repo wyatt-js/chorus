@@ -19,8 +19,8 @@ import (
 var LogWriter io.Writer = os.Stderr
 
 // ChunkFrames is the PCM granule the broadcaster reads and forwards (10ms at
-// 44.1kHz). It also sets the granularity of per-output offsets.
-const ChunkFrames = 441
+// 48kHz). It also sets the granularity of per-output offsets.
+const ChunkFrames = 480
 
 // jitterChunks is the per-sink channel headroom beyond any priming silence — the
 // fan-out's tolerance for an output that briefly can't keep up before it has to
@@ -230,6 +230,6 @@ func silenceChunks(offset time.Duration) int {
 	if offset <= 0 {
 		return 0
 	}
-	chunkDur := time.Duration(ChunkFrames) * time.Second / 44100
+	chunkDur := time.Duration(ChunkFrames) * time.Second / 48000
 	return int(offset / chunkDur)
 }

@@ -102,8 +102,8 @@ audiotee ─► capture ─► broadcaster ─┬─► Cast      (live WAV over
 
 The main binary is **pure Go** (CGO_ENABLED=0); platform and protocol access live
 in separate sidecar processes — Swift for capture/CoreAudio (`audiotee`,
-`chorusaudio`), Rust for AirPlay 2 (`airplayrelay`). Audio is 44.1kHz/16-bit/
-stereo PCM throughout.
+`chorusaudio`), Rust for AirPlay 2 (`airplayrelay`). Audio is 48kHz/16-bit/
+stereo PCM throughout — macOS's native rate, so nothing resamples.
 
 ## Caveats
 

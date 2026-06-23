@@ -212,7 +212,7 @@ impl StdinSource {
 
 impl AudioSource for StdinSource {
     fn format(&self) -> AudioFormat {
-        AudioFormat::CD_QUALITY // s16le / 44100 / stereo
+        AudioFormat::STEREO_48K // s16le / 48000 / stereo (chorus pipeline rate)
     }
 
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {

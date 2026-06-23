@@ -1216,7 +1216,9 @@ impl ConnectionManager {
                 if use_hires {
                     (0x2, 352, 1 << 16)
                 } else {
-                    (0x2, 352, 0x40000) // ALAC
+                    // ALAC 48000/16/2 = 0x100000 (1<<20), matching chorus's 48k
+                    // pipeline. (ALAC 44100/16/2 was 0x40000.)
+                    (0x2, 352, 0x100000)
                 }
             }
             AudioCodec::Aac => (0x4, 1024, 1 << 22), // AAC_LC_44100_2
@@ -1261,15 +1263,17 @@ impl ConnectionManager {
             .insert("spf", u64::from(spf))
             .insert("audioMode", "default")
             .insert("isMedia", true)
-            .insert("sr", 44100_u64)
+            .insert("sr", 48000_u64) // chorus pipeline rate (matches audioFormat ALAC_48000_16_2)
             .insert("supportsDynamicStreamID", false)
             .insert("streamConnectionID", stream_connection_id)
             .insert("shk", ek.to_vec())
             .insert("shiv", eiv.to_vec()) // Include IV for Realtime streams (Python receiver needs it)
             .insert("controlPort", u64::from(ctrl_port))
             .insert("timingPort", u64::from(time_port))
-            .insert("latencyMin", 11025) // 250ms in samples
-            .insert("latencyMax", 88200); // 2s in samples
+            // Sample-denominated, scaled for 48k. latencyMax must stay ≥ the 2s
+            // SETRATEANCHORTIME lead (96000 = 2s @ 48k; 88200 would be only 1.84s).
+            .insert("latencyMin", 12000) // 250ms @ 48k
+            .insert("latencyMax", 96000); // 2s @ 48k
 
         // Add sample rate and bits per sample explicitly for hires
         if use_hires {

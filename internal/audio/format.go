@@ -13,8 +13,12 @@ func (f Format) BytesPerFrame() int {
 	return f.Channels * f.BitDepth / 8
 }
 
-// StereoCD is the format chorus runs the pipeline in: 44.1kHz, 16-bit, stereo.
-// It is what audiotee emits with `--sample-rate 44100 --stereo` and what every
-// output sink expects (AirPlay 2's AudioFormat::CD_QUALITY, the CoreAudio render
-// helper, and the live WAV Cast stream), so no conversion is needed.
-var StereoCD = Format{SampleRate: 44100, Channels: 2, BitDepth: 16}
+// StereoCD is the format chorus runs the pipeline in: 48kHz, 16-bit, stereo.
+// (Name kept for call-site stability; it is no longer 44.1kHz.) 48kHz is macOS's
+// native system-audio rate, so capturing at 48k means audiotee does NO
+// sample-rate conversion — eliminating a per-chunk resampler that spliced an
+// audible click at every chunk boundary onto every output. The BT device, the
+// Samsung TV, and most CoreAudio outputs are natively 48k too, so nothing
+// downstream resamples either. Every sink (AirPlay 2, the CoreAudio render
+// helper, the live WAV Cast stream) is configured to match.
+var StereoCD = Format{SampleRate: 48000, Channels: 2, BitDepth: 16}

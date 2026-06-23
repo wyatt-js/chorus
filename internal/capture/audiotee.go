@@ -39,7 +39,10 @@ func Start(ctx context.Context, excludePIDs []int) (*Capture, error) {
 		return nil, err
 	}
 
-	args := []string{"--sample-rate", "44100", "--stereo"}
+	// Capture at 48kHz — macOS's native system-audio rate — so audiotee performs
+	// no sample-rate conversion (its 48→44.1 resampler was clicking at every
+	// chunk boundary on every output). Must match audio.StereoCD.
+	args := []string{"--sample-rate", "48000", "--stereo"}
 	if len(excludePIDs) > 0 {
 		args = append(args, "--exclude-processes")
 		for _, pid := range excludePIDs {

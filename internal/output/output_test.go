@@ -38,11 +38,11 @@ func TestWAVStreamHeader(t *testing.T) {
 	le32 := func(b []byte) uint32 {
 		return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 	}
-	// sampleRate at offset 24, byteRate (= 44100*4) at offset 28.
-	if got := le32(h[24:]); got != 44100 {
-		t.Errorf("sampleRate = %d, want 44100", got)
+	// sampleRate at offset 24, byteRate (= 48000*4) at offset 28.
+	if got := le32(h[24:]); got != 48000 {
+		t.Errorf("sampleRate = %d, want 48000", got)
 	}
-	if got := le32(h[28:]); got != 176400 {
-		t.Errorf("byteRate = %d, want 176400", got)
+	if got := le32(h[28:]); got != 192000 {
+		t.Errorf("byteRate = %d, want 192000", got)
 	}
 }
