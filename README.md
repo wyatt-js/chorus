@@ -35,9 +35,6 @@ and aligns them with per-device offsets so they line up instead of echoing.
 
 ## Install
 
-One command — downloads a prebuilt universal (Intel + Apple Silicon) bundle of
-`chorus` and its three sidecars, no toolchains required:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wyatt-js/chorus/main/install.sh | bash
 ```
@@ -121,15 +118,44 @@ in separate sidecar processes — Swift for capture/CoreAudio (`audiotee`,
 `chorusaudio`), Rust for AirPlay 2 (`airplayrelay`). Audio is 48kHz/16-bit/
 stereo PCM throughout — macOS's native rate, so nothing resamples.
 
+## Vendored dependencies
+
+Two upstream projects live under `third_party/` as **plain vendored files, not git
+submodules** — so their local patches are tracked directly in this repo and a
+plain `git clone` builds without any submodule init. A nested `third_party/go.mod`
+keeps them out of the parent Go module, so `go build ./...` ignores them.
+
+- **`third_party/airplay2-rs`** ([jburnhams/airplay2-rs](https://github.com/jburnhams/airplay2-rs),
+  upstream rev `527884f`) — the AirPlay 2 sender, consumed by `airplayrelay` via a
+  `path` dependency in `native/airplayrelay/Cargo.toml`. It's early-stage (v0.1)
+  and doesn't work out of the box against strict modern receivers (Samsung TVs,
+  HomePods), so it's patched locally:
+  - **`OPTIONS` deferred until after authentication** — strict receivers `403` a
+    cleartext `OPTIONS`, so it's sent over the encrypted channel instead.
+  - **Fuller `SETUP` #2** — the buffered audio stream carries the full `streams`
+    field set (`streamConnectionID` / `supportsDynamicStreamID` / `isMedia` / `sr`
+    / `audioMode`) and drops the RAOP `Transport` header.
+  - **ALAC codec** for the audio stream.
+  - **PTP grandmaster-id fallback** — `SETRATEANCHORTIME`'s `networkTimeTimelineID`
+    falls back to the PTP grandmaster id captured from the master's Announce, since
+    Samsung omits `timingPeerInfo.ClockID`.
+  - **No zero-pad PCM** (`streaming/pcm.rs`) — a short packet is completed by
+    reading more from the source rather than splicing in silence; the old zero-pad
+    produced an audible pop every few seconds as the device and local clocks drift.
+
+  With these, the full handshake + live audio is confirmed end-to-end on a Samsung
+  Neo QLED; HomePod's PIN/encryption path is still untested.
+
+- **`third_party/audiotee`** ([makeusabrew/audiotee](https://github.com/makeusabrew/audiotee))
+  — the system-audio capture sidecar (Core Audio process taps). Vendored
+  unmodified; pinned here so the capture path builds reproducibly.
+
 ## Caveats
 
 - **AirPlay 2 needs a patched dependency.** Sending goes through airplay2-rs
   (early-stage, v0.1), which doesn't work out of the box against strict modern
-  receivers — so it's **vendored under `third_party/airplay2-rs` and locally
-  patched** (OPTIONS deferred until after auth, a fuller SETUP `streams` field
-  set, ALAC, PTP grandmaster-id fallback, no-zero-pad PCM). With those patches the
-  full handshake + live audio is confirmed end-to-end on Samsung TVs; HomePod's
-  PIN/encryption path is still untested.
+  receivers — so it's vendored and locally patched. See
+  [Vendored dependencies](#vendored-dependencies) for the full list of patches.
 - **Audio sync is still being hardened.** Outputs run on independent clocks, and
   periodic pops under clock drift are a known open issue.
 - **Cast buffers several seconds** — align other outputs *to* it. The live
