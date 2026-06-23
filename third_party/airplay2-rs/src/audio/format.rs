@@ -120,6 +120,14 @@ impl AudioFormat {
         channels: ChannelConfig::Stereo,
     };
 
+    /// 16-bit 48kHz stereo — macOS's native system-audio rate. chorus drives the
+    /// whole pipeline at 48k so nothing resamples; the sidecar streams it as-is.
+    pub const STEREO_48K: Self = Self {
+        sample_format: SampleFormat::I16,
+        sample_rate: SampleRate::Hz48000,
+        channels: ChannelConfig::Stereo,
+    };
+
     /// Create a new audio format
     #[must_use]
     pub fn new(

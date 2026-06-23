@@ -259,7 +259,7 @@ func runBTDisconnect(address: String) {
 func runRender(uid: String) {
   guard let dev = deviceID(forUID: uid) else { die("no output device with UID \(uid)") }
 
-  let ring = RingBuffer(capacity: 44100 * 4)  // ~1s
+  let ring = RingBuffer(capacity: 48000 * 4)  // ~1s
 
   // Instantiate an AUHAL output unit.
   var desc = AudioComponentDescription(
@@ -280,10 +280,10 @@ func runRender(uid: String) {
     die("could not set output device")
   }
 
-  // Tell the unit our client format (s16le/44100/stereo, interleaved); the unit
-  // converts to the device's hardware format.
+  // Tell the unit our client format (s16le/48000/stereo, interleaved); the unit
+  // converts to the device's hardware format. Must match audio.StereoCD (48k).
   var asbd = AudioStreamBasicDescription(
-    mSampleRate: 44100,
+    mSampleRate: 48000,
     mFormatID: kAudioFormatLinearPCM,
     mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
     mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
@@ -313,7 +313,7 @@ func runRender(uid: String) {
   // first so the callback always has a backlog to draw on. The unit isn't running
   // yet, so nothing drains the ring during priming and we can count bytes directly.
   // Mirrors the AirPlay path, which fills its buffer before it begins streaming.
-  let primeTarget = 44100 * 2  // ~0.5s of the ~1s ring
+  let primeTarget = 48000 * 2  // ~0.5s of the ~1s ring
   var primed = 0
   while primed < primeTarget {
     let n = tmp.withUnsafeMutableBytes { read(0, $0.baseAddress, chunk) }

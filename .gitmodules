@@ -1,3 +1,0 @@
-[submodule "third_party/audiotee"]
-	path = third_party/audiotee
-	url = https://github.com/makeusabrew/audiotee.git

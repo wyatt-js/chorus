@@ -104,8 +104,10 @@ pub struct PcmStreamer {
     encoder_aac: Mutex<Option<AacEncoder>>,
     /// Codec type
     codec_type: RwLock<AudioCodec>,
-    /// Outgoing packet buffer for retransmissions
-    packet_buffer: Mutex<crate::protocol::rtp::packet_buffer::PacketBuffer>,
+    /// Outgoing packet buffer for retransmissions. `Arc` so the dedicated
+    /// retransmit task (spawned in `streaming_loop`) can serve resends off the
+    /// audio loop while the loop keeps pushing freshly-sent packets.
+    packet_buffer: Arc<Mutex<crate::protocol::rtp::packet_buffer::PacketBuffer>>,
 }
 
 /// Commands for the streamer
@@ -155,8 +157,10 @@ impl PcmStreamer {
             encoder: Mutex::new(None),
             encoder_aac: Mutex::new(None),
             codec_type: RwLock::new(AudioCodec::Pcm),
-            packet_buffer: Mutex::new(crate::protocol::rtp::packet_buffer::PacketBuffer::new(
-                crate::protocol::rtp::packet_buffer::PacketBuffer::DEFAULT_SIZE,
+            packet_buffer: Arc::new(Mutex::new(
+                crate::protocol::rtp::packet_buffer::PacketBuffer::new(
+                    crate::protocol::rtp::packet_buffer::PacketBuffer::DEFAULT_SIZE,
+                ),
             )),
         }
     }
@@ -296,7 +300,10 @@ impl PcmStreamer {
         let mut packet_data = vec![0u8; bytes_per_packet];
         let mut cmd_rx = self.cmd_rx.lock().await;
 
-        // Use interval for precise timing of audio packets
+        // Use interval for precise timing of audio packets. Burst on a missed
+        // tick: if the loop briefly overruns a packet period, send the backlog
+        // back-to-back so no buffered audio is dropped (the receiver's jitter
+        // buffer absorbs the arrival bunching and plays by RTP timestamp).
         let mut audio_interval = tokio::time::interval(packet_duration);
         audio_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
         // The first tick completes immediately
@@ -305,6 +312,72 @@ impl PcmStreamer {
         // Use a separate interval for periodic time announcements (every 1 second)
         let mut announce_interval = tokio::time::interval(Duration::from_secs(1));
         announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Serve retransmission requests off the audio loop. The receiver (e.g. a
+        // Samsung TV) NACKs lost RTP packets over RTCP on the control socket; the
+        // ConnectionManager surfaces those as ConnectionEvent::RetransmitRequest.
+        // Nothing consumed that event before (the sole subscriber dropped it via a
+        // `_ => {}` arm), so every lost packet was a *permanent* gap — an audible
+        // pop. Wi-Fi loss is bursty, so the pops came in bursts. A dedicated task
+        // resends the buffered packets, decoupled from audio so a loss storm
+        // neither stalls playback nor is stalled by it.
+        if let Some(mut events) = self.connection.subscribe_events() {
+            let connection = Arc::clone(&self.connection);
+            let packet_buffer = Arc::clone(&self.packet_buffer);
+            tokio::spawn(async move {
+                use tokio::sync::broadcast::error::RecvError;
+                loop {
+                    match events.recv().await {
+                        Ok(crate::connection::ConnectionEvent::RetransmitRequest {
+                            seq_start,
+                            count,
+                        }) => {
+                            let packets_to_send: Vec<Vec<u8>> = {
+                                let buffer = packet_buffer.lock().await;
+                                buffer
+                                    .get_range(seq_start, count)
+                                    .map(|p| {
+                                        // [0x80, 0xD6, len_words_be, ...original RTP packet]
+                                        #[allow(
+                                            clippy::cast_possible_truncation,
+                                            reason = "Packet size is MTU-bounded, fits in u16 words"
+                                        )]
+                                        let len_words = (p.data.len() / 4) as u16;
+                                        let mut response = Vec::with_capacity(4 + p.data.len());
+                                        response.push(0x80);
+                                        response.push(0xD6);
+                                        response.extend_from_slice(&len_words.to_be_bytes());
+                                        response.extend_from_slice(&p.data);
+                                        response
+                                    })
+                                    .collect()
+                            };
+                            let served = packets_to_send.len();
+                            if served < count as usize {
+                                tracing::debug!(
+                                    "Retransmit seq {}: served {}/{} (older packets already evicted)",
+                                    seq_start,
+                                    served,
+                                    count
+                                );
+                            }
+                            for pkt in packets_to_send {
+                                if let Err(e) = connection.send_rtcp_control(&pkt).await {
+                                    tracing::warn!("Failed to send retransmit packet: {e}");
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        // A loss storm can outrun the broadcast channel; keep serving
+                        // rather than tearing the task down.
+                        Err(RecvError::Lagged(n)) => {
+                            tracing::warn!("Retransmit task lagged, dropped {n} events");
+                        }
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
 
         // Reusable buffer for refills
         let mut refill_buffer = vec![0u8; bytes_per_packet * 4];
