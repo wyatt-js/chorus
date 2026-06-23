@@ -1,0 +1,47 @@
+name: release
+
+# Build the universal macOS bundle and publish it to a GitHub Release whenever a
+# version tag (e.g. v0.1.0) is pushed. The install.sh script downloads the
+# tarball this produces.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build/publish (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macos-14 is Apple Silicon; we still cross-build a universal (arm64+x86_64)
+    # binary so one tarball runs on both Intel and Apple Silicon Macs.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Add Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build universal bundle
+        run: ./scripts/package.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/chorus-macos-universal.tar.gz \
+            dist/chorus-macos-universal.tar.gz.sha256

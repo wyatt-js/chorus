@@ -35,22 +35,38 @@ and aligns them with per-device offsets so they line up instead of echoing.
 
 ## Install
 
-Not yet published — build from source.
-
-**Requirements:** macOS 14.2+ (Apple Silicon), Go 1.25+, a Swift toolchain +
-Xcode CLI tools, and a Rust toolchain ([rustup.rs](https://rustup.rs), for the
-AirPlay 2 sidecar). The system-audio capture permission is granted on first run.
+One command — downloads a prebuilt universal (Intel + Apple Silicon) bundle of
+`chorus` and its three sidecars, no toolchains required:
 
 ```sh
-git clone --recurse-submodules https://github.com/<user>/chorus
+curl -fsSL https://raw.githubusercontent.com/wyatt-js/chorus/main/install.sh | bash
+```
+
+This installs `chorus`, `audiotee`, `chorusaudio`, and `airplayrelay` to
+`/usr/local/bin` (or `~/.local/bin` if that isn't writable). Override with
+`CHORUS_BIN_DIR=...` or pin a release with `CHORUS_VERSION=v0.1.0`.
+
+**Requirements:** macOS 14.2+. The system-audio capture permission is granted on
+first run (use Terminal.app if the prompt doesn't appear).
+
+<details>
+<summary>Build from source instead</summary>
+
+Needs Go 1.25+, a Swift toolchain (Xcode CLI tools), and a Rust toolchain
+([rustup.rs](https://rustup.rs), for the AirPlay 2 sidecar).
+
+```sh
+git clone https://github.com/wyatt-js/chorus
 cd chorus
 make deps     # builds sidecars: audiotee (capture) + chorusaudio (BT) + airplayrelay (AirPlay 2)
 make build    # builds ./bin/chorus (pure Go, CGO_ENABLED=0)
 make test     # optional
 ```
 
-If you cloned without `--recurse-submodules`, run `git submodule update --init
---recursive` first.
+Maintainers cut a release by pushing a version tag (`git tag v0.1.0 && git push
+--tags`); the `release` GitHub Actions workflow builds the universal bundle on a
+macOS runner and publishes it, which is what `install.sh` downloads.
+</details>
 
 ## Usage
 
