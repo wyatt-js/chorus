@@ -12,9 +12,10 @@ and aligns them with per-device offsets so they line up instead of echoing.
 
 <img width="541" height="150" alt="Screenshot 2026-06-22 at 11 02 15" src="https://github.com/user-attachments/assets/40fa8dbd-6475-474d-abe7-333078befb52" />
 
-> **Status:** early development. AirPlay 2, Cast, and Bluetooth output all work;
-> alignment is manual (`--offset`) today, mic auto-calibration is planned. See
-> [Roadmap](#roadmap).
+> **Status:** early development. AirPlay 2, Cast, and Bluetooth output all work,
+> as does mic-based acoustic auto-calibration (the `s` key) — though the latter is
+> not yet verified end-to-end on real multi-room hardware. Manual `--offset` stays
+> as an override. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -30,8 +31,9 @@ and aligns them with per-device offsets so they line up instead of echoing.
      + HomeKit pairing + timed PCM).
    - **Bluetooth**: render PCM to a paired device through the `chorusaudio` Swift
      helper (IOBluetooth + CoreAudio).
-4. **Align** — each output is delayed by a per-device offset (manual `--offset`
-   now; mic calibration later) so audio reaches your ears simultaneously.
+4. **Align** — each output is delayed by a per-device offset so audio reaches your
+   ears simultaneously. Set offsets manually (`--offset`) or measure them
+   automatically with the mic (the `s` key — see [Sync](#sync-mic-calibration)).
 
 ## Install
 
@@ -81,13 +83,26 @@ AirPlay, and paired Bluetooth devices and lets you multi-select across all three
 (↑/↓ move · enter/space toggle · select **Submit** + enter to confirm · q
 cancel). Selecting a disconnected Bluetooth device connects it on the spot. While
 playing, single keys stay live: **`m`** reopens the menu to add/drop devices
-(unchanged ones keep playing), **`q`** quits. (**`s`** — mic sync — is a
-placeholder for Phase 2.)
+(unchanged ones keep playing), **`s`** runs mic sync (below), **`q`** quits.
 
 **Flag form** (`--cast`/`--airplay`/`--bt`, each a repeatable name substring):
 streams to a fixed set until Ctrl-C, no in-session menu. `--offset name=dur`
 delays one device relative to the others. `--pin 1234` supplies a first-time
 pairing PIN (saved afterward). Pair Bluetooth devices in macOS Settings first.
+
+### Sync (mic calibration)
+
+Press **`s`** while playing to measure each device's latency acoustically and
+align them automatically — no manual `--offset` math. Because the mic is the
+Mac's built-in input and your speakers are in different rooms, sync is
+**user-paced**: it lists your active devices, you carry the laptop near one and
+press its number, and chorus plays a short test chirp on *that device only*,
+records it, and measures how long the sound took to arrive. Do this for each
+device (in any order), then press **`a`** to align — chorus delays the faster
+devices to match the slowest. **`r`** resets measurements, **`q`** goes back.
+
+If a measurement reports it couldn't hear the tone, move the Mac closer to that
+speaker and retry. Calibration briefly mutes the other devices while it measures.
 
 ## Roadmap
 
@@ -95,15 +110,17 @@ pairing PIN (saved afterward). Pair Bluetooth devices in macOS Settings first.
 |-------|------|--------|
 | 0 | Capture → single output | **done** |
 | 1 | Fan out to Cast + AirPlay 2 + Bluetooth; manual `--offset` | **done** |
-| 2 | Mic auto-calibration — chirp + FFT → automatic per-device delay | planned |
+| 2 | Mic auto-calibration — chirp + FFT → automatic per-device delay | **done**, hardware validation pending |
 | 3 | Periodic re-sync against clock drift | stretch |
 
-Phase 2 is the centerpiece: it computes the `--offset` values automatically
-(`--offset` stays as a manual override). **The hard part is clock drift** — a
-one-time offset is only correct at the instant it's measured; independent device
-clocks drift over minutes, so long sessions need periodic recalibration (Phase
-3). The target metric is residual inter-device offset: uncorrected ~250ms →
-**<15ms** after calibration.
+Phase 2 computes the offsets automatically (`--offset` stays as a manual
+override): it plays a chirp on each device, records it on the Mac's mic, and
+cross-correlates to recover the per-device latency. The plumbing it needed —
+runtime offset retuning with no playback gap — also sets up Phase 3. **The hard
+part that remains is clock drift** — a one-time offset is only correct at the
+instant it's measured; independent device clocks drift over minutes, so long
+sessions need periodic recalibration (Phase 3). The target metric is residual
+inter-device offset: uncorrected ~250ms → **<15ms** after calibration.
 
 ## Architecture
 
@@ -117,6 +134,12 @@ The main binary is **pure Go** (CGO_ENABLED=0); platform and protocol access liv
 in separate sidecar processes — Swift for capture/CoreAudio (`audiotee`,
 `chorusaudio`), Rust for AirPlay 2 (`airplayrelay`). Audio is 48kHz/16-bit/
 stereo PCM throughout — macOS's native rate, so nothing resamples.
+
+Sync (the `s` key) adds a measurement path on top: the broadcaster plays a chirp
+on one output and silences the rest, `chorusaudio record` captures the Mac's mic,
+and the pure-Go `internal/calibrate` package (hand-rolled FFT + matched-filter
+cross-correlation) recovers each device's latency, which retunes the offsets live
+with no playback gap.
 
 ## Vendored dependencies
 
@@ -156,8 +179,10 @@ keeps them out of the parent Go module, so `go build ./...` ignores them.
   (early-stage, v0.1), which doesn't work out of the box against strict modern
   receivers — so it's vendored and locally patched. See
   [Vendored dependencies](#vendored-dependencies) for the full list of patches.
-- **Audio sync is still being hardened.** Outputs run on independent clocks, and
-  periodic pops under clock drift are a known open issue.
+- **Audio sync is still being hardened.** Mic auto-calibration (the `s` key) is
+  implemented but not yet validated end-to-end on real multi-room hardware; the
+  10ms offset granularity caps the best-case residual at ±5ms. Outputs also run on
+  independent clocks, so a static offset drifts over long sessions (Phase 3).
 - **Cast buffers several seconds** — align other outputs *to* it. The live
   WAV-over-HTTP path still wants more real-hardware validation (an ffmpeg→FLAC
   fallback is the planned alternative).

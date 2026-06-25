@@ -4,6 +4,7 @@ package output
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -74,6 +75,13 @@ type sink struct {
 	offset time.Duration
 	cancel context.CancelFunc
 
+	// Runtime delay adjustment (see SetOffset), in whole chunks. pendingSilence
+	// injects silence ahead of real audio to push this sink *later*; skip drops
+	// real chunks to pull it *earlier*. Both shift the stream at ChunkFrames
+	// (10ms) granularity without tearing the sink down.
+	pendingSilence int
+	skip           int
+
 	// Drop diagnostics: a full channel means this sink can't keep up, so fanOut
 	// drops the chunk — an audible click. drops is the running total; lastDropLog
 	// rate-limits the warning so a sustained stall doesn't flood the log.
@@ -90,6 +98,19 @@ type Broadcaster struct {
 	mu      sync.Mutex
 	sinks   []sink
 	rootCtx context.Context
+
+	// zero is a shared, read-only chunk of silence, lazily sized to the format.
+	// Sinks treat every chunk as read-only, so one instance can be fanned out.
+	zero []byte
+
+	// probe, when non-nil, diverts the fan-out for a calibration tone: captured
+	// audio is replaced with silence until the deadline, so only the chirp
+	// pre-queued onto the target sink (by Probe) is audible. See Probe.
+	probe *probeState
+}
+
+type probeState struct {
+	deadline time.Time
 }
 
 func New(format audio.Format) *Broadcaster {
@@ -208,28 +229,137 @@ func (b *Broadcaster) fanOut(ctx context.Context) {
 			return
 		case buf := <-b.pcmCh:
 			b.mu.Lock()
-			for i := range b.sinks {
-				s := &b.sinks[i]
-				select {
-				case s.ch <- buf:
-				default: // sink is behind; drop rather than stall everyone
-					s.drops++
-					if now := time.Now(); now.Sub(s.lastDropLog) >= time.Second {
-						log.Printf("output %s: dropped chunk (buffer full); %d total — likely an audible click",
-							s.out.Name(), s.drops)
-						s.lastDropLog = now
-					}
+			// During a calibration probe, replace captured audio with silence so
+			// only the chirp pre-queued onto the target sink is heard.
+			if b.probe != nil {
+				if time.Now().After(b.probe.deadline) {
+					b.probe = nil
+				} else {
+					buf = b.silence()
 				}
+			}
+			for i := range b.sinks {
+				b.deliver(&b.sinks[i], buf)
 			}
 			b.mu.Unlock()
 		}
 	}
 }
 
+// deliver hands one chunk to a sink, applying any pending runtime offset
+// adjustment first: skip drops the chunk (advancing the sink), pendingSilence
+// injects a silence chunk ahead of it (delaying the sink). Caller holds b.mu.
+func (b *Broadcaster) deliver(s *sink, buf []byte) {
+	if s.skip > 0 {
+		s.skip--
+		return
+	}
+	if s.pendingSilence > 0 && b.trySend(s, b.silence()) {
+		s.pendingSilence--
+	}
+	b.trySend(s, buf)
+}
+
+// trySend non-blockingly enqueues one chunk, reporting whether it fit. A full
+// channel means the sink is behind, so the chunk is dropped (an audible click)
+// rather than stalling the other sinks.
+func (b *Broadcaster) trySend(s *sink, buf []byte) bool {
+	select {
+	case s.ch <- buf:
+		return true
+	default:
+		s.drops++
+		if now := time.Now(); now.Sub(s.lastDropLog) >= time.Second {
+			log.Printf("output %s: dropped chunk (buffer full); %d total — likely an audible click",
+				s.out.Name(), s.drops)
+			s.lastDropLog = now
+		}
+		return false
+	}
+}
+
+// silence returns the shared read-only zero chunk, sizing it on first use.
+func (b *Broadcaster) silence() []byte {
+	if b.zero == nil {
+		b.zero = make([]byte, ChunkFrames*b.format.BytesPerFrame())
+	}
+	return b.zero
+}
+
+// SetOffset shifts every sink named name to an absolute delay of target,
+// relative to the other outputs, while it plays — silence is injected to add
+// delay or buffered chunks dropped to remove it, at ChunkFrames granularity.
+// Used by acoustic calibration to time-align the outputs.
+func (b *Broadcaster) SetOffset(name string, target time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.sinks {
+		s := &b.sinks[i]
+		if s.out.Name() != name {
+			continue
+		}
+		chunks := int((target - s.offset) / chunkDur())
+		switch {
+		case chunks > 0:
+			s.pendingSilence += chunks
+		case chunks < 0:
+			s.skip += -chunks
+		}
+		s.offset = target
+	}
+}
+
+// Offset returns the delay currently applied to the named sink (0 if none).
+// Calibration uses it to recover a device's base latency from a measurement
+// that was taken with an offset already in effect.
+func (b *Broadcaster) Offset(name string) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.sinks {
+		if b.sinks[i].out.Name() == name {
+			return b.sinks[i].offset
+		}
+	}
+	return 0
+}
+
+// Probe pre-queues a calibration tone (s16le PCM in this Broadcaster's format)
+// onto the sink named name and silences the others for window, so a mic can
+// measure the tone's acoustic time-of-arrival for that one device. It returns
+// the moment the tone was queued; the delay until the mic hears it is the
+// sink's full output latency (our buffer + network + the device's own buffer).
+func (b *Broadcaster) Probe(name string, pcm []byte, window time.Duration) (time.Time, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var target *sink
+	for i := range b.sinks {
+		if b.sinks[i].out.Name() == name {
+			target = &b.sinks[i]
+			break
+		}
+	}
+	if target == nil {
+		return time.Time{}, fmt.Errorf("no output %q to probe", name)
+	}
+	b.probe = &probeState{deadline: time.Now().Add(window)}
+	t0 := time.Now()
+	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
+	for off := 0; off < len(pcm); off += chunkBytes {
+		end := min(off+chunkBytes, len(pcm))
+		chunk := make([]byte, chunkBytes)
+		copy(chunk, pcm[off:end])
+		b.trySend(target, chunk)
+	}
+	return t0, nil
+}
+
+func chunkDur() time.Duration {
+	return time.Duration(ChunkFrames) * time.Second / 48000
+}
+
 func silenceChunks(offset time.Duration) int {
 	if offset <= 0 {
 		return 0
 	}
-	chunkDur := time.Duration(ChunkFrames) * time.Second / 48000
-	return int(offset / chunkDur)
+	return int(offset / chunkDur())
 }

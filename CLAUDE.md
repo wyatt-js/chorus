@@ -27,9 +27,12 @@ internal/audio/      # shared PCM Format type (StereoCD = 48000/16/2)
 internal/output/     # Output interface, Broadcaster (fan-out + per-output delay),
                      #   Cast (live WAV HTTP + go-chromecast),
                      #   AirPlay (airplayrelay sidecar), BT (chorusaudio helper)
-internal/pipeline/   # wires capture -> broadcaster -> outputs (Run)
+internal/pipeline/   # wires capture -> broadcaster -> outputs (Run); SetOffset/Probe
+internal/calibrate/  # acoustic sync: chirp gen, hand-rolled FFT + matched-filter
+                     #   cross-correlation, mic-record orchestration (Measure)
 native/chorusaudio/ # Swift helper: `list` CoreAudio devices, `bt-list`/`bt-connect`
-                     #   paired Bluetooth (IOBluetooth), `render` PCM to a CoreAudio device
+                     #   paired Bluetooth (IOBluetooth), `render` PCM to a CoreAudio
+                     #   device, `record` the mic (s16le/48k/mono) for calibration
 native/airplayrelay/ # Rust sidecar (wraps airplay2-rs): `list` AirPlay 2 receivers +
                      #   `render` s16le PCM from stdin to one (HomeKit pairing persisted)
 scripts/build_deps.sh
@@ -37,7 +40,7 @@ third_party/         # vendored, locally patched (nested go.mod keeps them out o
                      #   the parent module): audiotee; airplay2-rs (rev 527884f)
 ```
 
-Planned: `internal/calibrate/` (chirp + FFT, P2). Keep `main` thin — wiring only.
+Keep `main` thin — wiring only. The sync UI lives in `cmd/chorus/sync.go`.
 
 ## Build / test / run
 
@@ -75,6 +78,28 @@ audiotee (PCM s16le/48000/stereo) -> capture.Reader
 capture tap so their own playback doesn't feed back into the capture.
 
 A slow output drops chunks rather than stalling the others (see `pump`).
+
+## Audio sync (acoustic calibration)
+
+The `s` key in `chorus play` runs per-device acoustic calibration. Because the
+mic is the Mac's built-in input and devices live in different rooms, it's
+**user-paced**: carry the laptop near a device, press its number, and chorus
+plays one chirp on *that device only* and measures its latency by ear of the
+mic. After ≥2 are measured it aligns them (`offset_i = max base latency −
+base_i`), delaying the faster devices to match the slowest.
+
+- `Broadcaster.SetOffset(name, target)` retunes a live sink's delay with no
+  teardown: it injects silence (delay more) or drops chunks (advance) at
+  `ChunkFrames` (10ms) granularity. `Probe(name, pcm, window)` diverts the
+  fan-out — chirp to the target sink, silence to the rest — and returns the emit
+  time. FIFO ordering means the chirp sits behind the sink's in-flight buffer, so
+  the measured latency includes the current offset; `Measure` subtracts it to
+  recover the device's *base* latency, so re-running doesn't compound.
+- `calibrate.Measure` spawns `chorusaudio record`, timestamps the first mic byte
+  to anchor the recording to our clock, fires the chirp, and matched-filters the
+  recording against the reference. The mic capture-path adds a constant bias that
+  **cancels** when latencies are differenced for offsets — only relative values
+  matter, so a single chirp per device (no averaging) is enough.
 
 ## Conventions
 
@@ -149,4 +174,11 @@ When touching the fan-out/offset path, preserve the ability to measure this.
   HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
 - **Unverified on hardware:** the live WAV-over-HTTP Cast path (ffmpeg→FLAC is the
   fallback).
+- **Audio sync** (`internal/calibrate`, `cmd/chorus/sync.go`): builds and unit-
+  tests pass (FFT round-trip, matched filter recovers a known delay + rejects
+  noise, `SetOffset` injection/skip). `chorusaudio record` verified to emit ~1s of
+  mic PCM. **Not yet verified end-to-end** against real multi-room devices: the
+  absolute latency numbers, the constant-bias cancellation assumption, and the
+  resulting residual offset (<15ms target) all need a real listen. 10ms offset
+  granularity caps best-case residual at ±5ms.
 - Ask before committing or pushing.

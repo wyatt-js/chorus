@@ -15,6 +15,10 @@
 //       Read s16le / 44100Hz / stereo PCM from stdin and play it to the device
 //       with the given UID (e.g. a paired Bluetooth soundbar).
 //
+//   chorusaudio record [--seconds <n>]
+//       Capture the default input device (the Mac's mic) as s16le/48000/mono to
+//       stdout for n seconds (default 5). Used by acoustic calibration.
+//
 // Rendering uses an AUHAL output unit aimed at a specific device with a render
 // callback — the reliable way to play to a non-default device on macOS.
 
@@ -134,6 +138,38 @@ final class RingBuffer {
     filled -= toCopy
     return toCopy
   }
+}
+
+// MARK: - Input capture (realtime thread): pull mic frames out of the unit into the ring
+
+// RecordContext carries what the input callback needs across the C boundary: the
+// unit to render from and the ring to stash captured frames in, plus a reusable
+// scratch buffer so the realtime thread never allocates.
+final class RecordContext {
+  let unit: AudioUnit
+  let ring: RingBuffer
+  let scratch: UnsafeMutableRawPointer
+  let scratchSize: Int
+  init(unit: AudioUnit, ring: RingBuffer) {
+    self.unit = unit
+    self.ring = ring
+    self.scratchSize = 1 << 16  // far larger than any input buffer slice
+    self.scratch = UnsafeMutableRawPointer.allocate(byteCount: scratchSize, alignment: 16)
+  }
+}
+
+let inputCallback: AURenderCallback = { (inRefCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, _) -> OSStatus in
+  let ctx = Unmanaged<RecordContext>.fromOpaque(inRefCon).takeUnretainedValue()
+  let bytesNeeded = Int(inNumberFrames) * 2  // mono s16 = 2 bytes/frame
+  if bytesNeeded > ctx.scratchSize { return noErr }
+  var abl = AudioBufferList(
+    mNumberBuffers: 1,
+    mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytesNeeded), mData: ctx.scratch))
+  let status = AudioUnitRender(ctx.unit, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &abl)
+  if status == noErr {
+    ctx.ring.write(ctx.scratch.assumingMemoryBound(to: UInt8.self), bytesNeeded)
+  }
+  return status
 }
 
 // MARK: - Render callback (realtime thread): pull PCM from the ring into the unit's buffer
@@ -336,6 +372,95 @@ func runRender(uid: String) {
   AudioComponentInstanceDispose(unit)
 }
 
+// runRecord captures the default input device (the Mac's mic) as s16le/48000/mono
+// to stdout for `seconds`. Used by acoustic calibration to hear the test chirp.
+// It flushes promptly (small chunks) so the reader's arrival timestamps stay
+// tight — calibration relies on a near-constant capture-to-stdout latency.
+func runRecord(seconds: Double) {
+  var addr = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwarePropertyDefaultInputDevice,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain)
+  var devID = AudioDeviceID(0)
+  var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+  guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &devID) == noErr,
+    devID != 0
+  else {
+    die("no default input device")
+  }
+
+  var desc = AudioComponentDescription(
+    componentType: kAudioUnitType_Output,
+    componentSubType: kAudioUnitSubType_HALOutput,
+    componentManufacturer: kAudioUnitManufacturer_Apple,
+    componentFlags: 0, componentFlagsMask: 0)
+  guard let comp = AudioComponentFindNext(nil, &desc) else { die("no HAL output component") }
+  var unitOpt: AudioUnit?
+  guard AudioComponentInstanceNew(comp, &unitOpt) == noErr, let unit = unitOpt else {
+    die("AudioComponentInstanceNew failed")
+  }
+
+  // Enable input (bus 1), disable output (bus 0) — this HAL unit captures.
+  var one: UInt32 = 1
+  var zero: UInt32 = 0
+  if AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1,
+    &one, UInt32(MemoryLayout<UInt32>.size)) != noErr {
+    die("could not enable input")
+  }
+  if AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0,
+    &zero, UInt32(MemoryLayout<UInt32>.size)) != noErr {
+    die("could not disable output")
+  }
+
+  // Aim at the default input device.
+  var d = devID
+  if AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+    &d, UInt32(MemoryLayout<AudioDeviceID>.size)) != noErr {
+    die("could not set input device")
+  }
+
+  // Our client format on the OUTPUT scope of the input bus: s16le/48000/mono.
+  // The unit converts from the mic's hardware format to this.
+  var asbd = AudioStreamBasicDescription(
+    mSampleRate: 48000,
+    mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2,
+    mChannelsPerFrame: 1, mBitsPerChannel: 16, mReserved: 0)
+  if AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+    &asbd, UInt32(MemoryLayout<AudioStreamBasicDescription>.size)) != noErr {
+    die("could not set input client format")
+  }
+
+  let ring = RingBuffer(capacity: 48000 * 2 * 4)  // ~4s of mono s16
+  let ctx = RecordContext(unit: unit, ring: ring)
+  var cb = AURenderCallbackStruct(inputProc: inputCallback, inputProcRefCon: Unmanaged.passUnretained(ctx).toOpaque())
+  if AudioUnitSetProperty(unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0,
+    &cb, UInt32(MemoryLayout<AURenderCallbackStruct>.size)) != noErr {
+    die("could not set input callback")
+  }
+
+  if AudioUnitInitialize(unit) != noErr { die("AudioUnitInitialize failed") }
+  if AudioOutputUnitStart(unit) != noErr { die("AudioOutputUnitStart failed") }
+
+  let deadline = Date().addingTimeInterval(seconds)
+  let chunk = 4096
+  var tmp = [UInt8](repeating: 0, count: chunk)
+  while Date() < deadline {
+    let n = tmp.withUnsafeMutableBufferPointer { ring.read($0.baseAddress!, chunk) }
+    if n > 0 {
+      tmp.withUnsafeBufferPointer { _ = fwrite($0.baseAddress, 1, n, stdout) }
+      fflush(stdout)
+    } else {
+      usleep(2000)  // ring empty; let the callback get ahead
+    }
+  }
+
+  AudioOutputUnitStop(unit)
+  AudioUnitUninitialize(unit)
+  AudioComponentInstanceDispose(unit)
+}
+
 // MARK: - Entry
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -393,7 +518,19 @@ case "render":
   }
   guard let u = uid else { die("usage: chorusaudio render --device-uid <uid>") }
   runRender(uid: u)
+case "record":
+  var seconds = 5.0
+  var i = 1
+  while i < args.count {
+    if args[i] == "--seconds", i + 1 < args.count {
+      seconds = Double(args[i + 1]) ?? seconds
+      i += 2
+    } else {
+      i += 1
+    }
+  }
+  runRecord(seconds: seconds)
 default:
-  FileHandle.standardError.write("usage: chorusaudio (list | bt-list [--reachable-timeout <sec>] | bt-connect --address <addr> | bt-disconnect --address <addr> | render --device-uid <uid>)\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: chorusaudio (list | bt-list [--reachable-timeout <sec>] | bt-connect --address <addr> | bt-disconnect --address <addr> | render --device-uid <uid> | record [--seconds <n>])\n".data(using: .utf8)!)
   exit(2)
 }

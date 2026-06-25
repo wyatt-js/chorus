@@ -209,6 +209,10 @@ func DisconnectBluetooth(ctx context.Context, address string) error {
 	return nil
 }
 
+// ChorusAudioPath locates the chorusaudio sidecar for callers outside this
+// package (e.g. acoustic calibration's mic recorder).
+func ChorusAudioPath() (string, error) { return helperPath() }
+
 // helperPath locates the chorusaudio binary: $CHORUS_AUDIO, then the built
 // package under the working directory, then $PATH.
 func helperPath() (string, error) {

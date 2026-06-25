@@ -88,6 +88,22 @@ func (s *Session) Apply(ctx context.Context, add []Target, removeNames []string)
 	return nil
 }
 
+// SetOffset retunes a live output's delay (absolute, relative to the others)
+// without interrupting playback — used by acoustic calibration to time-align.
+func (s *Session) SetOffset(name string, target time.Duration) {
+	s.b.SetOffset(name, target)
+}
+
+// Offset returns the delay currently applied to the named output.
+func (s *Session) Offset(name string) time.Duration { return s.b.Offset(name) }
+
+// Probe plays a calibration tone on one output and silences the rest, returning
+// the moment the tone was emitted. window must outlast the slowest output's
+// latency so the tone is still emitted while the others stay quiet.
+func (s *Session) Probe(name string, pcm []byte, window time.Duration) (time.Time, error) {
+	return s.b.Probe(name, pcm, window)
+}
+
 // Wait blocks until the session's context is cancelled, then tears down capture.
 func (s *Session) Wait() error {
 	<-s.rootCtx.Done()

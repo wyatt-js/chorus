@@ -237,7 +237,7 @@ func controlLoop(ctx context.Context, cancel context.CancelFunc, sess *pipeline.
 			handleMenu(ctx, sess, active, wait, volume, pin, offMap)
 			printStatus(active)
 		case 's':
-			fmt.Print("\r\n  " + ansiDim + "synchronize: calibration (P2) not yet implemented" + ansiReset + "\r\n")
+			runSync(ctx, sess, active)
 			printStatus(active)
 		}
 	}
