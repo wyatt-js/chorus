@@ -1,6 +1,6 @@
 # chorus
 
-**Synchronized multi-device audio relay for macOS.**
+**Synchronized cross-protocol multi-device audio relay for macOS.**
 
 `chorus` captures your Mac's system audio and relays it — time-aligned — to as
 many **Google Cast**, **AirPlay 2**, and **Bluetooth** speakers as you want, all
@@ -46,8 +46,7 @@ restarting. Everything below is detail on top of that one command.
      helper (IOBluetooth + CoreAudio).
 4. **Align** — each output is delayed by a per-device offset so audio reaches
    your ears simultaneously. Measure offsets automatically with the mic
-   (**`s`**), trim them by hand (**`d`**), or set them up front
-   (`--offset name=dur`). See [Aligning devices](#aligning-devices).
+   (**`s`**), trim them by hand (**`d`**). See [Aligning devices](#aligning-devices).
 
 ## Install
 
@@ -105,20 +104,6 @@ Once playing, these single keys stay live (you never have to restart):
 | **`d`** | delays — trim each device's offset by hand |
 | **`q`** | quit |
 
-### Skipping the picker
-
-You can name devices up front and stream to a fixed set until you quit:
-
-```sh
-chorus play --cast "The Frame"                    # one TV
-chorus play --airplay "HomePod" --bt "HW-S700D"   # an AirPlay speaker + a soundbar
-```
-
-`--cast` / `--airplay` / `--bt` each take a name substring and are repeatable.
-The live keys above still work. First-time pairing for a receiver that needs a
-PIN: add `--pin 1234` (saved afterward). Pair Bluetooth devices in macOS
-Settings first.
-
 ## Aligning devices
 
 Different speakers buffer for different amounts of time (Cast and AirPlay buffer
@@ -152,16 +137,6 @@ you'd rather not get up. Each device shows a centered bar (left = earlier, right
 - **↑/↓** select a device
 - **←/→** trim ±10 ms · **`[` / `]`** trim ±250 ms · **`0`** recenter
 - **`q`** done
-
-### Up-front offsets (`--offset`)
-
-If you already know the numbers, set them on the command line:
-
-```sh
-chorus play --airplay "HomePod" --bt "HW-S700D" --offset HW-S700D=2s
-```
-
-`--offset name=dur` delays one device relative to the others; it's repeatable.
 
 ## Architecture
 
