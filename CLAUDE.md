@@ -7,8 +7,14 @@ the user-facing project description.
 
 `chorus` — a macOS Go CLI that captures system audio and relays it
 time-aligned to multiple **Google Cast** + **AirPlay 2** + **Bluetooth** devices,
-with mic+chirp acoustic calibration (later) to auto-measure per-device latency.
-Module: `github.com/wyattjs/chorus`. Binary: `chorus`.
+with mic+chirp acoustic calibration to auto-measure per-device latency (plus a
+by-hand delay slider). All three output paths and both alignment modes are
+implemented. Module: `github.com/wyattjs/chorus`. Binary: `chorus`.
+
+The user-facing surface is a single command, `chorus play` (interactive picker +
+live single-key controls). Other binaries (`audiotee`, `chorusaudio`,
+`airplayrelay`) are internal sidecars, not a public CLI — don't document them as
+user commands.
 
 The whole thing is **pure Go (CGO_ENABLED=0)**. Reaching Apple/AirPlay APIs is
 done with separate sidecar processes (audiotee, chorusaudio, airplayrelay),
@@ -40,7 +46,10 @@ third_party/         # vendored, locally patched (nested go.mod keeps them out o
                      #   the parent module): audiotee; airplay2-rs (rev 527884f)
 ```
 
-Keep `main` thin — wiring only. The sync UI lives in `cmd/chorus/sync.go`.
+Keep `main` thin — wiring only. The interactive picker lives in
+`cmd/chorus/menu.go`; the live control loop and key handling in `play.go`;
+acoustic auto-sync (`s`) in `sync.go`; the by-hand delay slider (`d`) in
+`manualsync.go`.
 
 ## Build / test / run
 
@@ -79,14 +88,23 @@ capture tap so their own playback doesn't feed back into the capture.
 
 A slow output drops chunks rather than stalling the others (see `pump`).
 
-## Audio sync (acoustic calibration)
+## Audio alignment
 
-The `s` key in `chorus play` runs per-device acoustic calibration. Because the
-mic is the Mac's built-in input and devices live in different rooms, it's
-**user-paced**: carry the laptop near a device, press its number, and chorus
-plays one chirp on *that device only* and measures its latency by ear of the
-mic. After ≥2 are measured it aligns them (`offset_i = max base latency −
-base_i`), delaying the faster devices to match the slowest.
+There are three ways to align outputs, all applied live via
+`Broadcaster.SetOffset` (no playback gap):
+
+- **Acoustic auto-sync (`s` key, `sync.go`)** — per-device calibration. Because
+  the mic is the Mac's built-in input and devices live in different rooms, it's
+  **user-paced**: carry the laptop near a device, press its number, and chorus
+  plays one chirp on *that device only* and measures its latency by ear of the
+  mic. It re-aligns after *every* measurement (`offset_i = max base latency −
+  base_i`, delaying the faster devices to match the slowest), and the screen
+  closes itself once all active devices are measured. `r` resets; `q` closes.
+- **Manual delay slider (`d` key, `manualsync.go`)** — a signed per-device trim
+  dialed with arrow keys (←/→ ±10ms, [ / ] ±250ms, 0 recenter); trims are
+  normalized to non-negative output delays and the spread is capped at
+  `output.MaxOffset`.
+- **Up-front `--offset name=dur`** flags on `chorus play`.
 
 - `Broadcaster.SetOffset(name, target)` retunes a live sink's delay with no
   teardown: it injects silence (delay more) or drops chunks (advance) at
@@ -140,8 +158,9 @@ base_i`), delaying the faster devices to match the slowest.
   number of absent devices (≈ per-device timeout × count). It can have false
   negatives (a slow-to-answer device gets hidden); connecting still happens at
   select-time, so the spinner there is the backstop.
-- **Clock drift** is the core hard problem: independent clocks drift over minutes;
-  a static offset is fine short-term, periodic recalibration is the real fix (P3).
+- **Clock drift**: independent clocks drift over minutes, so a static offset is
+  exact only when measured. Re-running sync (`s`) or trimming delays (`d`)
+  recorrects it.
 
 ## Success metric
 
@@ -153,32 +172,26 @@ When touching the fan-out/offset path, preserve the ability to measure this.
 - Verify a path exists before referencing it; the architecture pivoted from
   classic-AirPlay/RAOP (libraop cgo, now removed) to Cast + AirPlay 2 + Bluetooth,
   so older notes may be stale.
-- **AirPlay 2 status:** on a Samsung Neo QLED the full patched handshake now
+- **AirPlay 2 status:** on a Samsung Neo QLED the full patched handshake
   completes end-to-end against real hardware: `GET /info` → transient SRP pairing
   (no PIN) → encrypted `OPTIONS` → `SETUP` #1/#2 → `SETPEERS` → PTP sync →
   `SETRATEANCHORTIME` → `RECORD` → live RTP audio (stable, no teardown). The local
   airplay2-rs patches that made this work (see `third_party/airplay2-rs`): OPTIONS
   after auth; buffered SETUP #2 carries the full `streams` field set
   (`streamConnectionID`/`supportsDynamicStreamID`/`isMedia`/`sr`/`audioMode`) and
-  drops the RAOP `Transport` header; ALAC codec; and SETRATEANCHORTIME's
+  drops the RAOP `Transport` header; ALAC codec; SETRATEANCHORTIME's
   `networkTimeTimelineID` falls back to the PTP grandmaster id (captured from the
   master's Announce) since Samsung omits `timingPeerInfo.ClockID`; and the PCM
   streamer (`streaming/pcm.rs`) completes a short packet by reading more from the
-  source instead of zero-padding it — the send cadence is a local interval but
-  audio arrives on a different clock, so a drained ring buffer used to splice
-  silence into a partial packet, an audible pop recurring every few seconds as the
-  clocks drift. Still to confirm by ear: sync quality (PTP offset logging looks
-  off). HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
-  master's Announce) since Samsung omits `timingPeerInfo.ClockID`. Still to confirm
-  by ear: actual audible output + sync quality (PTP offset logging looks off).
-  HomePod's PIN/encryption path remains untested. airplay2-rs is early-stage (v0.1).
-- **Unverified on hardware:** the live WAV-over-HTTP Cast path (ffmpeg→FLAC is the
-  fallback).
-- **Audio sync** (`internal/calibrate`, `cmd/chorus/sync.go`): builds and unit-
-  tests pass (FFT round-trip, matched filter recovers a known delay + rejects
-  noise, `SetOffset` injection/skip). `chorusaudio record` verified to emit ~1s of
-  mic PCM. **Not yet verified end-to-end** against real multi-room devices: the
-  absolute latency numbers, the constant-bias cancellation assumption, and the
-  resulting residual offset (<15ms target) all need a real listen. 10ms offset
-  granularity caps best-case residual at ±5ms.
+  source instead of zero-padding it (the old zero-pad spliced silence into a
+  partial packet, an audible pop recurring every few seconds as the clocks drift).
+  HomePod's PIN/encryption path remains untested; airplay2-rs is early-stage
+  (v0.1).
+- **Cast:** live WAV-over-HTTP is the working path; ffmpeg→FLAC is the fallback.
+- **Audio alignment** (`internal/calibrate`, `cmd/chorus/sync.go` +
+  `manualsync.go`): implemented and aligned live via `SetOffset`. Unit tests cover
+  the FFT round-trip, matched-filter delay recovery + noise rejection, and offset
+  injection/skip. 10ms offset granularity caps best-case residual at ±5ms; the
+  <15ms target is the success metric to preserve when touching the fan-out path.
+  Constant-bias cancellation is by design — only relative latencies matter.
 - Ask before committing or pushing.
