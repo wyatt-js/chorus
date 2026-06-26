@@ -23,10 +23,12 @@ type Prober interface {
 // rather than apply a bogus latency.
 const MinScore = 6.0
 
-// probeWindow must outlast the slowest output's latency so the tone is still
-// emitted (with the others silenced) by the time it reaches a high-buffer sink
-// like Cast, which can lag several seconds.
-const probeWindow = 6 * time.Second
+// probeWindow must outlast the slowest output's latency so the chirp is recorded
+// (and the others stay silent) until it actually comes out of a high-buffer sink.
+// AirPlay and Cast can lag ~8s+, so this is sized well past that; the recording
+// runs probeWindow+1s. The cost is that every measurement takes this long, even
+// for low-latency Bluetooth — acceptable for a one-time-per-device calibration.
+const probeWindow = 13 * time.Second
 
 // Measure plays one chirp on the named output, records the Mac's mic, and
 // returns that output's acoustic latency — the full path from "handed to the
