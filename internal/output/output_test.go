@@ -16,49 +16,38 @@ func (f fakeOutput) Run(context.Context, <-chan []byte) error { return nil }
 
 func TestSetOffsetAdjustsLiveSink(t *testing.T) {
 	b := New(audio.StereoCD)
-	s := &sink{out: fakeOutput{name: "x"}, ch: make(chan []byte, 16)}
-	b.sinks = append(b.sinks, *s)
+	b.sinks = append(b.sinks, sink{out: fakeOutput{name: "x"}, ch: make(chan []byte, 16)})
 
-	// Add 30ms (3 chunks) of delay: each subsequent real chunk should be preceded
-	// by one injected silence chunk until the backlog clears.
+	// Add 30ms (3 chunks) of delay: one contiguous block of silence is enqueued
+	// immediately so the speaker goes quiet, then resumes in sync.
 	b.SetOffset("x", 30*time.Millisecond)
-	if got := b.sinks[0].pendingSilence; got != 3 {
-		t.Fatalf("pendingSilence = %d, want 3", got)
+	if got := len(b.sinks[0].ch); got != 3 {
+		t.Fatalf("queued silence chunks = %d, want 3", got)
 	}
-	real := []byte{1, 2, 3, 4}
-	for range 3 {
-		b.deliver(&b.sinks[0], real)
+	if got := b.Offset("x"); got != 30*time.Millisecond {
+		t.Errorf("Offset = %v, want 30ms", got)
 	}
-	if got := b.sinks[0].pendingSilence; got != 0 {
-		t.Errorf("pendingSilence after draining = %d, want 0", got)
-	}
-	// Channel should hold 3 (silence, real) pairs = 6 chunks, alternating.
-	if got := len(b.sinks[0].ch); got != 6 {
-		t.Fatalf("queued chunks = %d, want 6", got)
-	}
-	for i := range 3 {
-		if sil := <-b.sinks[0].ch; len(sil) != ChunkFrames*audio.StereoCD.BytesPerFrame() {
-			t.Errorf("pair %d: first chunk not a full silence chunk (len %d)", i, len(sil))
-		}
-		if got := <-b.sinks[0].ch; string(got) != string(real) {
-			t.Errorf("pair %d: second chunk = %v, want real audio", i, got)
+	full := ChunkFrames * audio.StereoCD.BytesPerFrame()
+	for i := 0; i < 3; i++ {
+		if sil := <-b.sinks[0].ch; len(sil) != full {
+			t.Errorf("chunk %d is not a full silence chunk (len %d)", i, len(sil))
 		}
 	}
 
-	// Now pull the sink 20ms (2 chunks) earlier: the next two real chunks are
-	// dropped instead of delivered.
+	// Refill with 5 chunks, then reduce by 20ms (2 chunks): two are dropped to
+	// catch up, leaving 3.
+	for i := 0; i < 5; i++ {
+		b.sinks[0].ch <- make([]byte, full)
+	}
 	b.SetOffset("x", 10*time.Millisecond)
-	if got := b.sinks[0].skip; got != 2 {
-		t.Fatalf("skip = %d, want 2", got)
+	if got := len(b.sinks[0].ch); got != 3 {
+		t.Errorf("queued chunks after reduce = %d, want 3", got)
 	}
-	b.deliver(&b.sinks[0], real)
-	b.deliver(&b.sinks[0], real)
-	if got := len(b.sinks[0].ch); got != 0 {
-		t.Errorf("dropped chunks should not enqueue; queued = %d, want 0", got)
-	}
-	b.deliver(&b.sinks[0], real)
-	if got := len(b.sinks[0].ch); got != 1 {
-		t.Errorf("after skip cleared, real chunk should enqueue; queued = %d, want 1", got)
+
+	// Negative target clamps to zero.
+	b.SetOffset("x", -50*time.Millisecond)
+	if got := b.Offset("x"); got != 0 {
+		t.Errorf("Offset after negative target = %v, want 0", got)
 	}
 }
 

@@ -81,13 +81,6 @@ type sink struct {
 	offset time.Duration
 	cancel context.CancelFunc
 
-	// Runtime delay adjustment (see SetOffset), in whole chunks. pendingSilence
-	// injects silence ahead of real audio to push this sink *later*; skip drops
-	// real chunks to pull it *earlier*. Both shift the stream at ChunkFrames
-	// (10ms) granularity without tearing the sink down.
-	pendingSilence int
-	skip           int
-
 	// Drop diagnostics: a full channel means this sink can't keep up, so fanOut
 	// drops the chunk — an audible click. drops is the running total; lastDropLog
 	// rate-limits the warning so a sustained stall doesn't flood the log.
@@ -247,25 +240,11 @@ func (b *Broadcaster) fanOut(ctx context.Context) {
 				}
 			}
 			for i := range b.sinks {
-				b.deliver(&b.sinks[i], buf)
+				b.trySend(&b.sinks[i], buf)
 			}
 			b.mu.Unlock()
 		}
 	}
-}
-
-// deliver hands one chunk to a sink, applying any pending runtime offset
-// adjustment first: skip drops the chunk (advancing the sink), pendingSilence
-// injects a silence chunk ahead of it (delaying the sink). Caller holds b.mu.
-func (b *Broadcaster) deliver(s *sink, buf []byte) {
-	if s.skip > 0 {
-		s.skip--
-		return
-	}
-	if s.pendingSilence > 0 && b.trySend(s, b.silence()) {
-		s.pendingSilence--
-	}
-	b.trySend(s, buf)
 }
 
 // trySend non-blockingly enqueues one chunk, reporting whether it fit. A full
@@ -295,9 +274,12 @@ func (b *Broadcaster) silence() []byte {
 }
 
 // SetOffset shifts every sink named name to an absolute delay of target (clamped
-// to [0, MaxOffset]), relative to the other outputs, while it plays — silence is
-// injected to add delay or buffered chunks dropped to remove it, at ChunkFrames
-// granularity. Used by acoustic calibration and the manual delay sliders.
+// to [0, MaxOffset]), relative to the other outputs, while it plays. To add delay
+// it enqueues one contiguous block of silence — so the speaker simply goes quiet
+// and then resumes in sync, rather than the buzzy silence/audio interleaving a
+// chunk-by-chunk ramp would produce. To remove delay it drops a contiguous block
+// of buffered audio so the device catches up. Used by acoustic calibration and
+// the manual delay sliders.
 func (b *Broadcaster) SetOffset(name string, target time.Duration) {
 	if target < 0 {
 		target = 0
@@ -314,10 +296,20 @@ func (b *Broadcaster) SetOffset(name string, target time.Duration) {
 		}
 		chunks := int((target - s.offset) / chunkDur())
 		switch {
-		case chunks > 0:
-			s.pendingSilence += chunks
-		case chunks < 0:
-			s.skip += -chunks
+		case chunks > 0: // add delay: one contiguous silent gap
+			for j := 0; j < chunks; j++ {
+				if !b.trySend(s, b.silence()) {
+					break // channel full (shouldn't happen within MaxOffset)
+				}
+			}
+		case chunks < 0: // remove delay: drop a contiguous block to catch up
+			for drop := -chunks; drop > 0; drop-- {
+				select {
+				case <-s.ch:
+				default:
+					drop = 1 // buffer already drained; stop
+				}
+			}
 		}
 		s.offset = target
 	}
