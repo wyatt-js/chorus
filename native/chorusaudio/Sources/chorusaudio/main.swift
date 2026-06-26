@@ -110,19 +110,24 @@ final class RingBuffer {
 
   init(capacity: Int) { buf = [UInt8](repeating: 0, count: capacity) }
 
-  func write(_ src: UnsafePointer<UInt8>, _ n: Int) {
+  // write copies up to n bytes into the ring without overwriting unread data,
+  // returning the count actually written (less than n when the ring is full).
+  // The render pump applies backpressure on a short write — never dropping — so
+  // an upstream delay (prepended silence for a per-device offset) accumulates and
+  // plays out instead of being discarded here. (The mic-capture path ignores the
+  // count: a full ring there just skips the newest frames.)
+  @discardableResult
+  func write(_ src: UnsafePointer<UInt8>, _ n: Int) -> Int {
     os_unfair_lock_lock(&lock)
     defer { os_unfair_lock_unlock(&lock) }
     let cap = buf.count
-    for i in 0..<n {
-      if filled == cap {  // overflow: drop oldest
-        head = (head + 1) % cap
-        filled -= 1
-      }
+    let toWrite = min(n, cap - filled)
+    for i in 0..<toWrite {
       buf[tail] = src[i]
       tail = (tail + 1) % cap
       filled += 1
     }
+    return toWrite
   }
 
   // read copies up to n bytes into dst, returning the count actually copied.
@@ -187,6 +192,19 @@ let renderCallback: AURenderCallback = { (inRefCon, _, _, _, inNumberFrames, ioD
     memset(dst + got, 0, bytesNeeded - got)  // underrun -> silence
   }
   return noErr
+}
+
+// writeBlocking writes all n bytes into the ring, waiting (a couple ms at a time)
+// for the realtime render callback to free space when it's full. Blocking here
+// propagates backpressure up the pipe to the Go feeder, so a per-device offset's
+// prepended silence accumulates upstream and delays playback instead of being
+// dropped — the realtime callback paces the whole chain.
+func writeBlocking(_ ring: RingBuffer, _ src: UnsafePointer<UInt8>, _ n: Int) {
+  var off = 0
+  while off < n {
+    off += ring.write(src + off, n - off)
+    if off < n { usleep(2000) }
+  }
 }
 
 // MARK: - Commands
@@ -354,17 +372,18 @@ func runRender(uid: String) {
   while primed < primeTarget {
     let n = tmp.withUnsafeMutableBytes { read(0, $0.baseAddress, chunk) }
     if n <= 0 { eof = true; break }
-    tmp.withUnsafeBufferPointer { ring.write($0.baseAddress!, n) }
+    tmp.withUnsafeBufferPointer { writeBlocking(ring, $0.baseAddress!, n) }
     primed += n
   }
 
   if AudioOutputUnitStart(unit) != noErr { die("AudioOutputUnitStart failed") }
 
-  // Pump the rest of stdin -> ring until EOF, then stop.
+  // Pump the rest of stdin -> ring until EOF, then stop. writeBlocking applies
+  // backpressure when the ring is full, so the upstream offset buffer accrues.
   while !eof {
     let n = tmp.withUnsafeMutableBytes { read(0, $0.baseAddress, chunk) }
     if n <= 0 { break }
-    tmp.withUnsafeBufferPointer { ring.write($0.baseAddress!, n) }
+    tmp.withUnsafeBufferPointer { writeBlocking(ring, $0.baseAddress!, n) }
   }
 
   AudioOutputUnitStop(unit)
