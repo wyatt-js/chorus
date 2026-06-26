@@ -211,8 +211,8 @@ func playInteractive(parent context.Context, wait time.Duration, volume int, pin
 }
 
 // controlLoop reads single-key commands while audio streams: m = reopen the
-// device menu, s = synchronize, q/Ctrl-C = quit. The session keeps playing the
-// whole time.
+// device menu, s = acoustic sync, d = manual delays, q/Ctrl-C = quit. The session
+// keeps playing the whole time.
 func controlLoop(ctx context.Context, cancel context.CancelFunc, sess *pipeline.Session, active map[string]activeEntry, wait time.Duration, volume int, pin string, offMap map[string]time.Duration) error {
 	fd := int(os.Stdin.Fd())
 	old, err := term.MakeRaw(fd)
@@ -238,6 +238,9 @@ func controlLoop(ctx context.Context, cancel context.CancelFunc, sess *pipeline.
 			printStatus(active)
 		case 's':
 			runSync(ctx, sess, active)
+			printStatus(active)
+		case 'd':
+			runManualSync(sess, active)
 			printStatus(active)
 		}
 	}
@@ -318,9 +321,9 @@ func printStatus(active map[string]activeEntry) {
 		names = append(names, e.name)
 	}
 	sort.Strings(names)
-	fmt.Printf("\r\n%s▶%s playing to %d device(s): %s\r\n   %s[m]%s menu   %s[s]%s sync   %s[q]%s quit\r\n",
+	fmt.Printf("\r\n%s▶%s playing to %d device(s): %s\r\n   %s[m]%s menu   %s[s]%s sync   %s[d]%s delays   %s[q]%s quit\r\n",
 		ansiGreen, ansiReset, len(names), strings.Join(names, ", "),
-		ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset)
+		ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset)
 }
 
 func matchCast(devs []discover.CastDevice, name string) (discover.CastDevice, error) {

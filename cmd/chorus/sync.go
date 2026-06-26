@@ -15,9 +15,10 @@ import (
 
 // runSync drives acoustic calibration from the in-session control loop (terminal
 // already in raw mode). The user carries the Mac near each device and plays a
-// test chirp on it; chorus measures that device's latency by ear of the mic.
-// Once two or more are measured, it aligns them by delaying the faster ones to
-// match the slowest (offset_i = max base latency − base latency_i).
+// test chirp on it; chorus measures that device's latency by ear of the mic and
+// re-aligns the measured devices immediately (delaying the faster ones to match
+// the slowest). Once every device is measured the alignment is complete, so the
+// screen closes itself.
 func runSync(ctx context.Context, sess *pipeline.Session, active map[string]activeEntry) {
 	names := make([]string, 0, len(active))
 	for _, e := range active {
@@ -37,34 +38,37 @@ func runSync(ctx context.Context, sess *pipeline.Session, active map[string]acti
 		}
 		switch c := buf[0]; {
 		case c == 'q' || c == 3 || c == 27: // q, Ctrl-C, Esc
-			fmt.Print("\r\n  " + ansiDim + "sync cancelled (offsets unchanged)" + ansiReset + "\r\n")
+			fmt.Print("\r\n  " + ansiDim + "sync closed" + ansiReset + "\r\n")
 			return
-		case c == 'r':
+		case c == 'r': // start over: clear measurements and remove all delay
+			for _, name := range names {
+				sess.SetOffset(name, 0)
+			}
 			base = map[string]time.Duration{}
-		case c == 'a':
-			if len(base) < 2 {
-				fmt.Print("\r\n  " + ansiDim + "measure at least two devices before aligning" + ansiReset + "\r\n")
-				time.Sleep(900 * time.Millisecond)
+		case c >= '1' && c <= '9':
+			idx := int(c - '1')
+			if idx >= len(names) {
 				continue
 			}
-			applyOffsets(sess, base)
-			return
-		case c >= '1' && c <= '9':
-			if idx := int(c - '1'); idx < len(names) {
-				measureOne(ctx, sess, names[idx], base)
+			measureOne(ctx, sess, names[idx], base)
+			if len(base) == len(names) { // all devices done → aligned, close
+				fmt.Printf("\r\n  %s✓ aligned %d devices%s\r\n", ansiGreen, len(names), ansiReset)
+				time.Sleep(800 * time.Millisecond)
+				return
 			}
 		}
 	}
 }
 
-// measureOne plays one chirp on a device and records its base latency. Measure
-// blocks for several seconds (the chirp can take that long to reach a Cast
-// device's buffer), so a spinner runs meanwhile.
+// measureOne plays one chirp on a device, records its base latency, and re-aligns
+// every measured device. Measure blocks for several seconds (the chirp can take
+// that long to reach a Cast device's buffer), so a spinner runs meanwhile.
 func measureOne(ctx context.Context, sess *pipeline.Session, name string, base map[string]time.Duration) {
+	fmt.Print("\r\n") // blank line between the key hints and the result/spinner
 	stop := startSpinner("playing test tone on " + name + " — keep the Mac close…")
 
 	// Subtract any offset already applied so we store the device's own latency,
-	// which keeps re-runs (measure → align → measure again) from compounding.
+	// which keeps the live re-alignment below from compounding across measurements.
 	cur := sess.Offset(name)
 	lat, err := calibrate.Measure(ctx, sess, name, audio.StereoCD)
 	if err != nil {
@@ -77,38 +81,30 @@ func measureOne(ctx context.Context, sess *pipeline.Session, name string, base m
 		b = 0
 	}
 	base[name] = b
+	alignOffsets(sess, base)
 	stop(fmt.Sprintf("%s●%s %s — %d ms", ansiGreen, ansiReset, name, b.Milliseconds()))
 	time.Sleep(300 * time.Millisecond)
 }
 
-// applyOffsets delays every measured device to match the slowest one.
-func applyOffsets(sess *pipeline.Session, base map[string]time.Duration) {
+// alignOffsets delays every measured device to match the slowest one. Offsets are
+// absolute, so re-running it after each measurement converges without compounding.
+func alignOffsets(sess *pipeline.Session, base map[string]time.Duration) {
 	var maxLat time.Duration
 	for _, l := range base {
 		if l > maxLat {
 			maxLat = l
 		}
 	}
-	names := make([]string, 0, len(base))
-	for n := range base {
-		names = append(names, n)
+	for n, b := range base {
+		sess.SetOffset(n, maxLat-b)
 	}
-	sort.Strings(names)
-
-	fmt.Print("\r\n  " + ansiGreen + "aligned to the slowest device:" + ansiReset + "\r\n")
-	for _, n := range names {
-		off := maxLat - base[n]
-		sess.SetOffset(n, off)
-		fmt.Printf("   %-22s +%d ms\r\n", n, off.Milliseconds())
-	}
-	time.Sleep(900 * time.Millisecond)
 }
 
 // drawSync prints the calibration screen: each device with its measured latency
 // or "not measured", plus the key hints.
 func drawSync(names []string, base map[string]time.Duration) {
 	var b strings.Builder
-	b.WriteString("\r\n  " + ansiBold + "sync" + ansiReset + ansiDim + " — measure each speaker's delay, then align them" + ansiReset + "\r\n\r\n")
+	b.WriteString("\r\n  " + ansiBold + "sync" + ansiReset + ansiDim + " — measure each speaker; they align automatically" + ansiReset + "\r\n\r\n")
 	for i, name := range names {
 		status := ansiDim + "not measured" + ansiReset
 		if lat, ok := base[name]; ok {
@@ -118,8 +114,7 @@ func drawSync(names []string, base map[string]time.Duration) {
 	}
 	b.WriteString("\r\n  " + ansiDim + "walk the Mac near a device, then press its number to play a test tone" + ansiReset + "\r\n")
 	b.WriteString("   " + ansiBold + "[1-9]" + ansiReset + " measure   " +
-		ansiBold + "[a]" + ansiReset + " apply & align   " +
 		ansiBold + "[r]" + ansiReset + " reset   " +
-		ansiBold + "[q]" + ansiReset + " back\r\n")
+		ansiBold + "[q]" + ansiReset + " close\r\n")
 	fmt.Print(b.String())
 }

@@ -32,6 +32,12 @@ const ChunkFrames = 480
 // bounded worst-case delay before a drop. 600 chunks ≈ 6s at 10ms/chunk.
 const jitterChunks = 600
 
+// MaxOffset caps a sink's delay. Each sink's channel is sized to hold this much
+// injected silence plus jitter headroom, so the manual delay sliders can dial any
+// device up to here (enough to cover Cast/AirPlay's multi-second buffering)
+// without overflowing the buffer and dropping chunks.
+const MaxOffset = 10 * time.Second
+
 // Output is a single audio sink. Run consumes PCM chunks (s16le/44100/stereo)
 // from in until in is closed or ctx is cancelled, then tears down.
 type Output interface {
@@ -179,9 +185,11 @@ func (b *Broadcaster) RemoveSink(name string) {
 func (b *Broadcaster) launchLocked(s *sink) {
 	chunkBytes := ChunkFrames * b.format.BytesPerFrame()
 	n := silenceChunks(s.offset)
-	// Size the buffer to fit the priming silence plus jitter headroom so priming
-	// never blocks and transient stalls don't force a (clicky) chunk drop.
-	s.ch = make(chan []byte, n+jitterChunks)
+	// Size the buffer to fit the largest allowed delay plus jitter headroom, so
+	// the sliders can inject silence up to MaxOffset at runtime (and priming never
+	// blocks / transient stalls don't force a clicky drop). Only the initial
+	// offset's worth is prefilled; the rest is spare capacity.
+	s.ch = make(chan []byte, silenceChunks(MaxOffset)+jitterChunks)
 	for range n {
 		s.ch <- make([]byte, chunkBytes)
 	}
@@ -286,11 +294,17 @@ func (b *Broadcaster) silence() []byte {
 	return b.zero
 }
 
-// SetOffset shifts every sink named name to an absolute delay of target,
-// relative to the other outputs, while it plays — silence is injected to add
-// delay or buffered chunks dropped to remove it, at ChunkFrames granularity.
-// Used by acoustic calibration to time-align the outputs.
+// SetOffset shifts every sink named name to an absolute delay of target (clamped
+// to [0, MaxOffset]), relative to the other outputs, while it plays — silence is
+// injected to add delay or buffered chunks dropped to remove it, at ChunkFrames
+// granularity. Used by acoustic calibration and the manual delay sliders.
 func (b *Broadcaster) SetOffset(name string, target time.Duration) {
+	if target < 0 {
+		target = 0
+	}
+	if target > MaxOffset {
+		target = MaxOffset
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i := range b.sinks {
