@@ -23,6 +23,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        # On a tag push this is the tag; on manual re-run, check out the exact tag
+        # given so the bundle matches the release it's attached to.
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -39,9 +43,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        # Idempotent: create the release only if it doesn't exist yet (plain tag
+        # push), then upload/replace the bundle. This survives the GitHub-UI flow
+        # where the release already exists before the workflow runs — `gh release
+        # create` would error on an existing release and the assets would be lost.
         run: |
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" \
             dist/chorus-macos-universal.tar.gz \
-            dist/chorus-macos-universal.tar.gz.sha256
+            dist/chorus-macos-universal.tar.gz.sha256 \
+            --clobber
