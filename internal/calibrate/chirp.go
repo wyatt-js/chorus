@@ -12,15 +12,19 @@ import (
 	"github.com/wyattjs/chorus/internal/audio"
 )
 
-// Chirp default parameters. A 500Hz–8kHz exponential sweep sits comfortably
-// inside the passband of laptop mics and consumer speakers while staying clear
-// of most low-frequency room rumble; ~0.7s gives the matched filter a strong,
-// sharp correlation peak without being annoyingly long.
+// Chirp default parameters. A 400Hz–4kHz exponential sweep stays in the warm
+// mid-band — clear of low-frequency room rumble, but capped below the piercing
+// highs that make a wider sweep harsh on the ears — while remaining easy for the
+// matched filter to find. ~0.8s keeps a strong, sharp correlation peak.
 const (
-	ChirpF0       = 500.0
-	ChirpF1       = 8000.0
-	ChirpDuration = 700 * time.Millisecond
-	chirpFade     = 8 * time.Millisecond // raised-cosine edges so it doesn't click
+	ChirpF0       = 400.0
+	ChirpF1       = 4000.0
+	ChirpDuration = 800 * time.Millisecond
+	chirpFade     = 30 * time.Millisecond // gentle raised-cosine onset/decay
+	// chirpAmp is the emission peak (0–1). Kept low so the tone is gentle on the
+	// ears; the matched filter's processing gain still detects it well below the
+	// level of the surrounding audio.
+	chirpAmp = 0.2
 )
 
 // Chirp is a generated test tone: PCM ready to emit, plus the mono reference
@@ -62,7 +66,7 @@ func GenerateChirp(format audio.Format, f0, f1 float64, dur time.Duration) Chirp
 		ref[n] = s
 	}
 
-	pcm := pcmFromMono(ref, format, 0.6) // 0.6 amplitude: loud enough, not clipping
+	pcm := pcmFromMono(ref, format, chirpAmp)
 	return Chirp{PCM: pcm, Reference: ref, SampleRate: sr}
 }
 
