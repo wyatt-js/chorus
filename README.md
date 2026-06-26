@@ -15,9 +15,7 @@ instead of echoing room to room.
 
 ## Demo
 
-<!-- TODO: drop the end-to-end GIF here (capture → fan-out → mic sync → in-sync playback). -->
-
-_End-to-end demo GIF coming soon._
+https://github.com/user-attachments/assets/801f4e25-cb49-4778-bf64-956c745e37c3
 
 ## Quick start
 
